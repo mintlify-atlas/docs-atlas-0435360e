@@ -1,0 +1,463 @@
+---
+title: "Lighting solutions"
+description: "Lightbulb driver for PWM, I2C, and single-wire LED dimming, color model conversions, zero-crossing detection for AC dimming, and electrical lighting overview."
+keywords: ["lighting", "lightbulb", "LED", "PWM", "LEDC", "BP5758D", "SM2135E", "WS2812", "HSV", "CCT", "zero crossing", "AC dimming", "ESP32"]
+---
+
+ESP-IoT-Solution provides a complete software stack for smart LED lighting products: a hardware-abstracted lightbulb driver that supports multiple dimming chips and output configurations, color model utilities, and zero-crossing detection for phase-cut AC dimming.
+
+---
+
+## Lightbulb driver
+
+The `lightbulb_driver` component abstracts PWM, I2C dimming chip, and single-wire LED protocols behind a single API. All ESP32 series chips are supported.
+
+### Supported drivers
+
+| Category | Driver | Chips / protocols |
+|----------|--------|-------------------|
+| PWM | `DRIVER_ESP_PWM` | LEDC peripheral, all ESP chips |
+| I2C | `DRIVER_SM2135EH` | SM2135EH |
+| I2C | `DRIVER_SM2182E` | SM2182E |
+| I2C | `DRIVER_SM2x35EGH` | SM2235EGH, SM2335EGH |
+| I2C | `DRIVER_BP1658CJ` | BP1658CJ |
+| I2C | `DRIVER_BP57x8D` | BP5758, BP5758D, BP5768D |
+| I2C | `DRIVER_KP18058` | KP18058 |
+| Single bus | `DRIVER_WS2812` | WS2812 (SPI or RMT) |
+| Single bus | `DRIVER_SM16825E` | SM16825E |
+
+### LED bead combinations
+
+| Constant | Channels | Description |
+|----------|----------|-------------|
+| `LED_BEADS_1CH_C` | 1 | Cold white |
+| `LED_BEADS_1CH_W` | 1 | Warm white |
+| `LED_BEADS_2CH_CW` | 2 | Warm + cold white |
+| `LED_BEADS_3CH_RGB` | 3 | Red + green + blue |
+| `LED_BEADS_4CH_RGBW` | 4 | RGB + warm white |
+| `LED_BEADS_4CH_RGBC` | 4 | RGB + cold white |
+| `LED_BEADS_5CH_RGBCW` | 5 | RGB + cold + warm white |
+
+### Installation
+
+```bash
+idf.py add-dependency "espressif/lightbulb_driver"
+```
+
+---
+
+## PWM dimming
+
+PWM dimming varies LED brightness by adjusting the duty cycle of the LEDC output. A higher duty cycle means more time at full voltage, producing more light.
+
+### Use case: 3-channel RGB bulb at 4000 Hz
+
+```c
+#include "lightbulb.h"
+
+lightbulb_config_t config = {
+    // 1. Select PWM driver and set frequency
+    .type = DRIVER_ESP_PWM,
+    .driver_conf.pwm.freq_hz = 4000,
+
+    // 2. Capability flags
+    .capability.enable_fade          = true,
+    .capability.fade_time_ms         = 800,
+    .capability.enable_lowpower      = false,
+    .capability.enable_hardware_cct  = true,
+    .capability.enable_status_storage = true,
+    .capability.led_beads            = LED_BEADS_3CH_RGB,
+    .capability.storage_cb           = NULL,
+    .capability.sync_change_brightness_value = true,
+
+    // 3. GPIO pin assignment
+    .io_conf.pwm_io.red   = 25,
+    .io_conf.pwm_io.green = 26,
+    .io_conf.pwm_io.blue  = 27,
+
+    // 4–5. Power limits and gamma (NULL = defaults)
+    .external_limit = NULL,
+    .gamma_conf     = NULL,
+
+    // 6. Initial state: color mode, on, hue=0 (red), S=100, V=100
+    .init_status.mode       = WORK_COLOR,
+    .init_status.on         = true,
+    .init_status.hue        = 0,
+    .init_status.saturation = 100,
+    .init_status.value      = 100,
+};
+lightbulb_init(&config);
+```
+
+<Note>
+  For ESP32 with PWM dimming, the driver holds an APB power lock while the light is on to prevent DFS from causing LEDC frequency fluctuation. The lock is released when the light is switched off.
+</Note>
+
+---
+
+## I2C dimming
+
+I2C dimming chips accept current-control commands over a two-wire bus (SDA + SCL). The lightbulb component sends these commands automatically when you call the color or brightness APIs.
+
+### Supported chips: SM2135EH, SM2x35EGH, BP57x8D, BP1658CJ, KP18058
+
+### Use case: BP5758D with 5-channel RGBCW
+
+```c
+lightbulb_config_t config = {
+    // 1. Select BP57x8D driver and configure I2C parameters
+    .type = DRIVER_BP57x8D,
+    .driver_conf.bp57x8d.freq_khz        = 300,
+    .driver_conf.bp57x8d.enable_iic_queue = true,
+    .driver_conf.bp57x8d.iic_clk         = 4,
+    .driver_conf.bp57x8d.iic_sda         = 5,
+    // Per-channel current limits (mA): R, G, B, CW, WW
+    .driver_conf.bp57x8d.current         = {50, 50, 50, 30, 30},
+
+    // 2. Capability flags
+    .capability.enable_fade           = true,
+    .capability.fade_time_ms          = 800,
+    .capability.enable_status_storage = true,
+    .capability.led_beads             = LED_BEADS_5CH_RGBCW,
+    .capability.storage_cb            = NULL,
+    .capability.sync_change_brightness_value = true,
+
+    // 3. Output channel mapping
+    .io_conf.iic_io.red         = OUT3,
+    .io_conf.iic_io.green       = OUT2,
+    .io_conf.iic_io.blue        = OUT1,
+    .io_conf.iic_io.cold_white  = OUT5,
+    .io_conf.iic_io.warm_yellow = OUT4,
+
+    .external_limit = NULL,
+    .gamma_conf     = NULL,
+
+    .init_status.mode       = WORK_COLOR,
+    .init_status.on         = true,
+    .init_status.hue        = 0,
+    .init_status.saturation = 100,
+    .init_status.value      = 100,
+};
+lightbulb_init(&config);
+```
+
+---
+
+## Single-wire dimming (WS2812)
+
+WS2812 LEDs use a self-clocked single-wire protocol. The component uses the ESP32 SPI peripheral (recommended) or RMT to generate the timing signal.
+
+### Use case: 10 WS2812 LEDs
+
+```c
+lightbulb_config_t config = {
+    .type = DRIVER_WS2812,
+    .driver_conf.ws2812.led_num  = 10,
+    .driver_conf.ws2812.ctrl_io  = 4,
+
+    .capability.enable_fade           = true,
+    .capability.fade_time_ms          = 800,
+    .capability.enable_status_storage = true,
+    .capability.led_beads             = LED_BEADS_3CH_RGB,  // Only RGB supported
+    .capability.storage_cb            = NULL,
+
+    .external_limit = NULL,
+    .gamma_conf     = NULL,
+
+    .init_status.mode       = WORK_COLOR,
+    .init_status.on         = true,
+    .init_status.hue        = 0,
+    .init_status.saturation = 100,
+    .init_status.value      = 100,
+};
+lightbulb_init(&config);
+```
+
+---
+
+## Color control API
+
+After initialization, control the lightbulb with these functions:
+
+```c
+// Color mode (HSV)
+esp_err_t lightbulb_set_hsv(uint16_t hue, uint8_t saturation, uint8_t value);
+esp_err_t lightbulb_set_hue(uint16_t hue);           // 0–360
+esp_err_t lightbulb_set_saturation(uint8_t saturation); // 0–100
+esp_err_t lightbulb_set_value(uint8_t value);         // 0–100 (brightness)
+
+// White/CCT mode
+esp_err_t lightbulb_set_cctb(uint16_t cct, uint8_t brightness);
+esp_err_t lightbulb_set_cct(uint16_t cct);       // 0–100 (%) or 2200–7000 (K)
+esp_err_t lightbulb_set_brightness(uint8_t brightness); // 0–100
+
+// xyY color model
+esp_err_t lightbulb_set_xyy(float x, float y, float Y);
+
+// On/off
+esp_err_t lightbulb_set_switch(bool status);
+
+// Read back state
+int16_t lightbulb_get_hue(void);
+int8_t  lightbulb_get_saturation(void);
+int8_t  lightbulb_get_value(void);
+int8_t  lightbulb_get_cct_percentage(void);
+int16_t lightbulb_get_cct_kelvin(void);
+int8_t  lightbulb_get_brightness(void);
+bool    lightbulb_get_switch(void);
+lightbulb_works_mode_t lightbulb_get_mode(void);
+```
+
+---
+
+## Color model conversions
+
+The driver includes conversion utilities between the HSV, RGB, xyY, and CCT models:
+
+```c
+// HSV ↔ RGB (8-bit depth, 0–255)
+esp_err_t lightbulb_hsv2rgb(uint16_t hue, uint8_t saturation, uint8_t value,
+                              uint8_t *red, uint8_t *green, uint8_t *blue);
+
+esp_err_t lightbulb_rgb2hsv(uint16_t red, uint16_t green, uint16_t blue,
+                              uint16_t *hue, uint8_t *saturation, uint8_t *value);
+
+// xyY ↔ RGB
+esp_err_t lightbulb_xyy2rgb(float x, float y, float Y,
+                              uint8_t *red, uint8_t *green, uint8_t *blue);
+
+esp_err_t lightbulb_rgb2xyy(uint8_t red, uint8_t green, uint8_t blue,
+                              float *x, float *y, float *Y);
+
+// CCT Kelvin ↔ percentage (default range: 2200 K warm – 7000 K cold)
+esp_err_t lightbulb_kelvin2percentage(uint16_t kelvin, uint8_t *percentage);
+esp_err_t lightbulb_percentage2kelvin(uint8_t percentage, uint16_t *kelvin);
+```
+
+---
+
+## Color calibration
+
+### CCT calibration
+
+<Tabs>
+  <Tab title="Standard mode">
+    Specify the minimum and maximum Kelvin values. Intermediate values are computed by linear interpolation.
+
+    ```c
+    config.cct_mix_mode.standard.kelvin_min = 2700;
+    config.cct_mix_mode.standard.kelvin_max = 6500;
+    ```
+  </Tab>
+  <Tab title="Precision mode">
+    Provide a table of measured RGBCW ratios at specific color temperatures. More calibration points yield more accurate color reproduction.
+
+    ```c
+    lightbulb_cct_mapping_data_t cct_table[] = {
+        { .rgbcw = {0, 0, 0, 0.3, 0.7}, .cct_percentage = 0,   .cct_kelvin = 2700 },
+        { .rgbcw = {0, 0, 0, 0.5, 0.5}, .cct_percentage = 50,  .cct_kelvin = 4600 },
+        { .rgbcw = {0, 0, 0, 0.7, 0.3}, .cct_percentage = 100, .cct_kelvin = 6500 },
+    };
+    config.cct_mix_mode.precise.table      = cct_table;
+    config.cct_mix_mode.precise.table_size = 3;
+    ```
+  </Tab>
+</Tabs>
+
+### Color (HSV) calibration
+
+Precision color mode lets you provide per-hue RGBCW coefficients at three saturation levels (100%, 50%, and ~10%):
+
+```c
+lightbulb_color_mapping_data_t color_table[] = {
+    {
+        .hue       = 0,   // Red
+        .rgbcw_100 = {1.0, 0, 0, 0, 0},
+        .rgbcw_50  = {0.5, 0.3, 0.3, 0, 0},
+        .rgbcw_0   = {0.2, 0.2, 0.2, 0.2, 0.2},
+    },
+    // ... more hue entries
+};
+config.color_mix_mode.precise.table      = color_table;
+config.color_mix_mode.precise.table_size = 1;
+```
+
+---
+
+## Gamma correction and power limiting
+
+### Gamma correction
+
+```c
+lightbulb_gamma_config_t gamma = {
+    .balance_coefficient      = {1.0, 0.9, 0.85, 1.0, 1.0}, // R, G, B, C, W
+    .color_curve_coefficient  = 2.2,  // Gamma for RGB mode
+    .white_curve_coefficient  = 2.2,  // Gamma for CCT mode
+};
+config.gamma_conf = &gamma;
+```
+
+`balance_coefficient` scales each channel's final output proportionally. Adjust this before running color calibration.
+
+### Power limiting
+
+```c
+lightbulb_power_limit_t limit = {
+    .white_max_brightness = 100,  // Maximum white brightness %
+    .white_min_brightness = 5,    // Minimum white brightness %
+    .color_max_value      = 100,  // Maximum HSV value %
+    .color_min_value      = 5,    // Minimum HSV value %
+    .white_max_power      = 200,  // Max power for CW = 2× single channel
+    .color_max_power      = 300,  // Max power for RGB = 3× single channel
+};
+config.external_limit = &limit;
+```
+
+---
+
+## Fade (smooth transition)
+
+The fade engine runs a software timer that fires every 12 ms. Each channel tracks its current output value, target value, step count, and remaining steps. All channels converge to their targets simultaneously over the configured `fade_time_ms`.
+
+```c
+// Set fade duration
+lightbulb_set_fade_time(1200);     // 1200 ms
+
+// Enable or disable fade globally
+lightbulb_set_fades_function(true);
+
+// Query current state
+bool fading = lightbulb_get_fades_function_status();
+```
+
+---
+
+## Lighting effects
+
+```c
+lightbulb_effect_config_t effect = {
+    .effect_type        = EFFECT_BREATH,
+    .mode               = WORK_COLOR,
+    .hue                = 120,   // Green
+    .saturation         = 100,
+    .min_value_brightness = 10,
+    .max_value_brightness = 100,
+    .effect_cycle_ms    = 2000,  // 2-second breath cycle
+    .total_ms           = 10000, // Auto-stop after 10 s
+    .user_cb            = NULL,
+    .interrupt_forbidden = false,
+};
+lightbulb_basic_effect_start(&effect);
+
+// Stop and hold current state
+lightbulb_basic_effect_stop();
+
+// Stop and restore previous state
+lightbulb_basic_effect_stop_and_restore();
+```
+
+---
+
+## Zero-crossing detection
+
+The `zero_detection` component analyzes AC zero-crossing signals for phase-cut dimming. It supports both square-wave and pulse-wave zero-crossing signal types, using either GPIO interrupts or MCPWM capture as the underlying driver.
+
+The component reports events via a callback, including signal validity status, frequency out-of-range warnings, and signal loss detection.
+
+### Events
+
+| Event | Trigger condition |
+|-------|-------------------|
+| `SIGNAL_RISING_EDGE` | Rising edge detected |
+| `SIGNAL_FALLING_EDGE` | Falling edge detected |
+| `SIGNAL_VALID` | Frequency in range, count exceeds `valid_times` |
+| `SIGNAL_INVALID` | Frequency out of range, count exceeds `invalid_times` |
+| `SIGNAL_LOST` | No edge detected within 100 ms |
+| `SIGNAL_FREQ_OUT_OF_RANGE` | Detected frequency is outside configured range |
+
+### API reference
+
+```c
+#include "zero_detection.h"
+
+// Create a zero-crossing detector
+zero_detect_handle_t zero_detect_create(zero_detect_config_t *config);
+
+// Register an event callback
+esp_err_t zero_detect_register_cb(zero_detect_handle_t zcd_handle,
+                                   zero_cross_cb_t cb, void *usr_data);
+
+// Pause / resume detection
+void zero_detect_pause(zero_detect_handle_t zcd_handle);
+void zero_detect_resume(zero_detect_handle_t zcd_handle);
+
+// Query status
+bool zero_detect_get_power_status(zero_detect_handle_t zcd_handle);
+bool zero_detect_singal_invaild_status(zero_detect_handle_t zcd_handle);
+zero_signal_type_t zero_detect_get_signal_type(zero_detect_handle_t zcd_handle);
+
+// Destroy
+esp_err_t zero_detect_delete(zero_detect_handle_t zcd_handle);
+```
+
+### Example: MCPWM capture with 50/60 Hz AC
+
+```c
+#include "zero_detection.h"
+
+void IRAM_ATTR zero_detection_event_cb(zero_detect_event_t event,
+                                        zero_detect_cb_param_t *param,
+                                        void *usr_data)
+{
+    switch (event) {
+    case SIGNAL_VALID:
+        // AC mains confirmed, safe to enable triac/dimmer
+        break;
+    case SIGNAL_LOST:
+        // AC mains lost, disable output immediately
+        break;
+    case SIGNAL_FREQ_OUT_OF_RANGE:
+        // Frequency anomaly detected
+        break;
+    default:
+        break;
+    }
+}
+
+zero_detect_config_t config = {
+    .capture_pin        = 2,
+    .freq_range_max_hz  = 65,
+    .freq_range_min_hz  = 45,
+    .valid_times        = 6,
+    .invalid_times      = 5,
+    .zero_signal_type   = SQUARE_WAVE,
+    .zero_driver_type   = MCPWM_TYPE,
+};
+
+zero_detect_handle_t zcd = zero_detect_create(&config);
+if (zcd == NULL) {
+    ESP_LOGE(TAG, "Zero detection create failed");
+}
+zero_detect_register_cb(zcd, zero_detection_event_cb, NULL);
+```
+
+<Warning>
+  Do not call blocking operations such as `vTaskDelay()` inside the zero-crossing callback. The callback executes from an ISR or high-priority task context.
+</Warning>
+
+### Configuration options
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `capture_pin` | 2 | GPIO for zero-cross signal input |
+| `freq_range_min_hz` | 45 Hz | Minimum valid frequency |
+| `freq_range_max_hz` | 65 Hz | Maximum valid frequency |
+| `valid_times` | 6 | Consecutive in-range samples before `SIGNAL_VALID` |
+| `invalid_times` | 5 | Consecutive out-of-range samples before `SIGNAL_INVALID` |
+| `signal_lost_time_us` | 100,000 µs | Timeout with no edge before `SIGNAL_LOST` |
+| `zero_signal_type` | `SQUARE_WAVE` | `SQUARE_WAVE` or `PULSE_WAVE` |
+| `zero_driver_type` | `GPIO_TYPE` | `GPIO_TYPE` or `MCPWM_TYPE` |
+
+<Tip>
+  Use `CONFIG_USE_GPTIMER=y` in `sdkconfig` to substitute the ESP-Timer backend with the GPTimer driver for higher-resolution period measurement.
+</Tip>

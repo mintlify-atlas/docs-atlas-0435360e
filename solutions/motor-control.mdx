@@ -1,0 +1,315 @@
+---
+title: "Motor control"
+description: "Servo motor control, sensorless BLDC square-wave control, FOC with esp_simplefoc, and DRV10987 driver for ESP32."
+keywords: ["motor", "servo", "BLDC", "brushless", "FOC", "field-oriented control", "sensorless", "ESP32", "LEDC", "MCPWM"]
+---
+
+ESP-IoT-Solution provides motor control components covering PWM servo output, sensorless brushless DC (BLDC) control using back-EMF zero-crossing, and Field-Oriented Control (FOC) for smooth torque/speed/position regulation.
+
+<CardGroup cols={3}>
+  <Card title="Servo" icon="sliders" href="#servo-motor-control">
+    Up to 16 independent PWM channels via LEDC, 50–400 Hz, angle API.
+  </Card>
+  <Card title="Sensorless BLDC" icon="rotate" href="#sensorless-bldc-control">
+    Six-step square-wave commutation with ADC or comparator zero-crossing detection.
+  </Card>
+  <Card title="FOC (esp_simplefoc)" icon="circle-nodes" href="#foc-field-oriented-control">
+    Arduino-FOC compatible API for smooth torque, speed, and angle control.
+  </Card>
+</CardGroup>
+
+---
+
+## Servo motor control
+
+The `servo` component uses the ESP32 LEDC peripheral to generate independent PWM channels for up to 16 servo motors simultaneously. It converts target angles to duty cycles automatically based on your servo's pulse width specification.
+
+- **Supported chips:** All ESP32 series
+- **Channels:** Up to 16 (ESP32), up to 8 (ESP32-S2)
+- **Frequency range:** 50–400 Hz
+- **Typical servo spec:** 20 ms period (50 Hz), 0.5–2.5 ms pulse width → 0–180°
+
+### Installation
+
+```bash
+idf.py add-dependency "espressif/servo"
+```
+
+### API reference
+
+```c
+#include "iot_servo.h"
+
+// Initialize a group of servo channels
+esp_err_t iot_servo_init(ledc_mode_t speed_mode, const servo_config_t *config);
+
+// Set target angle for a channel (not thread-safe)
+esp_err_t iot_servo_write_angle(ledc_mode_t speed_mode, uint8_t channel, float angle);
+
+// Read the current (theoretical) angle of a channel
+esp_err_t iot_servo_read_angle(ledc_mode_t speed_mode, uint8_t channel, float *angle);
+
+// Release LEDC resources for a channel group
+esp_err_t iot_servo_deinit(ledc_mode_t speed_mode);
+```
+
+### Configuration structure
+
+```c
+typedef struct {
+    uint16_t max_angle;        // Maximum angle in degrees (e.g. 180)
+    uint16_t min_width_us;     // Pulse width for 0° (typically 500 µs)
+    uint16_t max_width_us;     // Pulse width for max_angle (typically 2500 µs)
+    uint32_t freq;             // PWM frequency in Hz (typically 50)
+    ledc_timer_t timer_number; // LEDC timer to use
+    servo_channel_t channels;  // Pin and channel assignments
+    uint8_t channel_number;    // Number of channels in use
+} servo_config_t;
+```
+
+### Example: 8-channel servo group
+
+```c
+#include "iot_servo.h"
+
+servo_config_t servo_cfg = {
+    .max_angle    = 180,
+    .min_width_us = 500,
+    .max_width_us = 2500,
+    .freq         = 50,
+    .timer_number = LEDC_TIMER_0,
+    .channels = {
+        .servo_pin = {
+            SERVO_CH0_PIN, SERVO_CH1_PIN, SERVO_CH2_PIN, SERVO_CH3_PIN,
+            SERVO_CH4_PIN, SERVO_CH5_PIN, SERVO_CH6_PIN, SERVO_CH7_PIN,
+        },
+        .ch = {
+            LEDC_CHANNEL_0, LEDC_CHANNEL_1, LEDC_CHANNEL_2, LEDC_CHANNEL_3,
+            LEDC_CHANNEL_4, LEDC_CHANNEL_5, LEDC_CHANNEL_6, LEDC_CHANNEL_7,
+        },
+    },
+    .channel_number = 8,
+};
+
+// Initialize channel group
+iot_servo_init(LEDC_LOW_SPEED_MODE, &servo_cfg);
+
+// Move channel 0 to 100°
+iot_servo_write_angle(LEDC_LOW_SPEED_MODE, 0, 100.0f);
+
+// Read back the angle (theoretical, based on duty cycle)
+float current_angle;
+iot_servo_read_angle(LEDC_LOW_SPEED_MODE, 0, &current_angle);
+
+// Release resources
+iot_servo_deinit(LEDC_LOW_SPEED_MODE);
+```
+
+<Note>
+  `iot_servo_write_angle` is not thread-safe. Protect concurrent access with a mutex if called from multiple tasks.
+</Note>
+
+---
+
+## Sensorless BLDC control
+
+The `esp_sensorless_bldc_control` component implements sensorless six-step square-wave commutation for three-phase BLDC motors using back-EMF zero-crossing detection. No Hall sensors are required.
+
+**Supported chips:** ESP32 series  
+**PWM driver:** MCPWM (required for ADC zero-crossing mode) or LEDC
+
+### How sensorless commutation works
+
+A BLDC motor with a six-step inverter keeps two of three phases energized at any moment while the third phase floats. The back-EMF in the floating phase crosses zero exactly 30° before the next commutation point. By detecting these zero-crossings, the controller determines when to switch phase energization.
+
+Back-EMF magnitude is proportional to rotor speed:
+
+```
+BEMF = N · l · r · B · ω
+```
+
+where N = stator turns, B = rotor field, ω = angular speed.
+
+<Warning>
+  Zero-crossing detection fails at very low speeds (near zero RPM) because the back-EMF amplitude is too small to detect reliably.
+</Warning>
+
+### Startup sequence
+
+The component runs through these states in order:
+
+| State | Description |
+|-------|-------------|
+| `INJECT` | Determines initial rotor position by injecting voltage pulses and sampling bus current via ADC |
+| `ALIGNMENT` | Energizes a fixed winding set to physically lock the rotor to a known phase |
+| `DRAG` | Open-loop six-step commutation with gradually increasing frequency and duty cycle |
+| `CLOSED_LOOP` | Back-EMF zero-crossing detection takes over commutation |
+| `BLOCKED` | Stall protection activated |
+| `STOP` | Motor stopped |
+| `FAULT` | Motor fault condition |
+
+### Zero-crossing detection methods
+
+<Tabs>
+  <Tab title="ADC sampling">
+    The ADC samples the floating-phase terminal voltage and bus voltage when the upper MOSFET is conducting (peak of the MCPWM counter in center-aligned mode). Requires MCPWM as the PWM driver.
+
+    Key tuning macros:
+    ```c
+    #define ENTER_CLOSE_TIME    // Drag time before switching to closed loop
+    #define ZERO_REPEAT_TIME    // Consecutive detections required to validate a zero-crossing
+    #define AVOID_CONTINUE_CURRENT_TIME  // Blanking time after commutation
+    ```
+  </Tab>
+  <Tab title="Hardware comparator">
+    Hardware comparators on the ESP32 compare the floating-phase back-EMF against the bus midpoint. The zero-crossing is captured as a GPIO interrupt or MCPWM capture event. Suitable for higher motor speeds.
+
+    Key tuning macros:
+    ```c
+    #define ZERO_STABLE_FLAG_CNT         // Stable zero-crossings before entering closed loop
+    #define ZERO_CROSS_DETECTION_ACCURACY // Filtering depth (e.g. 0xFF = 8× confirm)
+    ```
+  </Tab>
+</Tabs>
+
+### Speed control (PID)
+
+```c
+#define SPEED_KP               // Proportional gain
+#define SPEED_KI               // Integral gain
+#define SPEED_KD               // Derivative gain
+#define SPEED_MIN_INTEGRAL     // Anti-windup: minimum integrator value
+#define SPEED_MAX_INTEGRAL     // Anti-windup: maximum integrator value
+#define SPEED_MIN_OUTPUT       // Minimum duty cycle output
+#define SPEED_MAX_OUTPUT       // Maximum duty cycle output
+#define SPEED_MAX_RPM          // Maximum allowed RPM
+#define SPEED_MIN_RPM          // Minimum allowed RPM
+#define SPEED_CAL_TYPE         // POSITION_PID or INCREMENT_PID
+```
+
+### Advance commutation
+
+The zero-crossing signal arrives 30° before the actual commutation point. Additional software filtering and processing delay require a small compensating advance:
+
+```c
+#define ZERO_CROSS_ADVANCE  6  // Advance angle = 180 / ZERO_CROSS_ADVANCE = 30°
+```
+
+---
+
+## FOC (Field-Oriented Control)
+
+`esp_simplefoc` is an FOC component derived from [Arduino-FOC](https://github.com/simplefoc/Arduino-FOC), adapted to run on ESP32 chips using LEDC or MCPWM peripherals. It supports torque, velocity, and angle control modes.
+
+FOC achieves smooth torque regulation by decomposing stator current into flux-producing and torque-producing components and controlling them independently in a rotating reference frame.
+
+### Installation
+
+```bash
+idf.py add-dependency "espressif/esp_simplefoc"
+```
+
+### FreeRTOS tick rate
+
+FOC requires a 1 kHz FreeRTOS tick rate:
+
+```
+(Top) → Component config → FreeRTOS → Kernel → configTICK_RATE_HZ = 1000
+```
+
+### Motor initialization
+
+```cpp
+// 14 pole-pair brushless motor
+BLDCMotor motor = BLDCMotor(14);
+```
+
+Key motor parameters (set to `NOT_SET` to skip):
+
+| Parameter | Meaning |
+|-----------|---------|
+| `pp` | Pole pair count (required) |
+| `R` | Phase resistance (Ω) |
+| `KV` | Motor KV value (rpm/V) |
+| `L` | Phase inductance (H) |
+
+### MOSFET driver initialization (3PWM mode)
+
+```cpp
+// Pins 4, 5, 6 drive the three half-bridges; supply = 12 V
+BLDCDriver3PWM driver = BLDCDriver3PWM(4, 5, 6);
+driver.voltage_power_supply = 12;
+driver.voltage_limit = 11;
+driver.init({1, 2, 3});  // LEDC/MCPWM channel assignments
+motor.linkDriver(&driver);
+```
+
+### Angle sensor initialization
+
+<Tabs>
+  <Tab title="AS5600 (I2C)">
+    ```cpp
+    AS5600 as5600 = AS5600(I2C_NUM_0, GPIO_NUM_1, GPIO_NUM_2);
+    as5600.init();
+    motor.linkSensor(&as5600);
+    ```
+  </Tab>
+  <Tab title="MT6701 (SPI or I2C)">
+    ```cpp
+    MT6701 mt6701 = MT6701(SPI_NUM_1, GPIO_NUM_5);
+    mt6701.init();
+    motor.linkSensor(&mt6701);
+    ```
+  </Tab>
+  <Tab title="AS5048A (SPI)">
+    ```cpp
+    AS5048A as5048a = AS5048A(SPI_NUM_1, GPIO_NUM_5);
+    as5048a.init();
+    motor.linkSensor(&as5048a);
+    ```
+  </Tab>
+</Tabs>
+
+### Controller modes
+
+| Mode | Constant | Description |
+|------|----------|-------------|
+| Torque | `MotionControlType::torque` | Direct current control |
+| Velocity | `MotionControlType::velocity` | Closed-loop speed |
+| Angle | `MotionControlType::angle` | Closed-loop position |
+| Open-loop velocity | `MotionControlType::velocity_openloop` | No sensor required |
+| Open-loop angle | `MotionControlType::angle_openloop` | No sensor required |
+
+<Tip>
+  Use an open-loop mode first during hardware bring-up to verify wiring and motor rotation direction before enabling closed-loop control.
+</Tip>
+
+### FOC initialization and control loop
+
+```cpp
+motor.controller = MotionControlType::velocity;
+motor.target = 10.0;  // 10 rad/s
+
+motor.init();      // Configure motor parameters
+motor.initFOC();   // Calibrate sensor and align motor
+
+while (true) {
+    motor.loopFOC();        // Run FOC algorithm (must call every cycle)
+    motor.move(target_value); // Apply target setpoint
+    command.run();           // Process serial commander input (optional)
+}
+```
+
+<Note>
+  If `initFOC()` reports a pole-pair mismatch, verify the motor's pole-pair count and minimize the air gap between the magnetic ring and the angle sensor.
+</Note>
+
+### SimpleFOCStudio tuning
+
+Motor control parameters (PID gains, voltage limits, motion mode) can be adjusted live without reflashing using [SimpleFOCStudio](https://github.com/simplefoc/SimpleFOCStudio) connected over UART or USB.
+
+### IQMath acceleration
+
+`esp_simplefoc` uses the [IQMath](https://components.espressif.com/components/espressif/iqmath) library for fixed-point FOC computation, reducing the floating-point load on the CPU.
+
+**Reference:** [Arduino-FOC API documentation](http://source.simplefoc.com/)

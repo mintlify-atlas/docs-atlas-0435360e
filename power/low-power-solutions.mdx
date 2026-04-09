@@ -1,0 +1,337 @@
+---
+title: "Low-power solutions"
+description: "Deep sleep, light sleep, Dynamic Frequency Scaling, ULP coprocessor, and VBAT battery backup for ESP32 series chips."
+keywords: ["low power", "deep sleep", "light sleep", "DFS", "ULP", "VBAT", "ESP32", "power management"]
+---
+
+ESP32 series chips provide multiple power-saving mechanisms: Deep-sleep mode, Light-sleep mode, Dynamic Frequency Scaling (DFS), and the ULP coprocessor. Choosing the right strategy depends on your wake-up latency requirements and the peripherals you need to keep running.
+
+## Deep sleep
+
+In Deep-sleep mode, all peripherals driven by `APB_CLK`, the CPU, and most RAM are powered down. Only the RTC controller, RTC peripherals, ULP coprocessor, RTC fast memory, and RTC slow memory remain optionally powered.
+
+<CardGroup cols={2}>
+  <Card title="Active mode" icon="bolt">
+    ~115 mA (ESP32 in Station mode)
+  </Card>
+  <Card title="Deep sleep (timer wake)" icon="moon">
+    ~6 µA
+  </Card>
+  <Card title="Deep sleep (RTC IO wake)" icon="plug">
+    ~6 µA
+  </Card>
+  <Card title="Deep sleep (touchpad wake)" icon="hand-pointer">
+    ~36 µA
+  </Card>
+</CardGroup>
+
+### Wake-up sources
+
+| Source | API | Use case |
+|--------|-----|----------|
+| Timer | `esp_deep_sleep_enable_timer_wakeup()` | Periodic sensor reporting |
+| External GPIO (Ext0) | `esp_sleep_enable_ext0_wakeup()` | Single-pin level trigger |
+| External GPIO (Ext1) | `esp_sleep_enable_ext1_wakeup()` | Multi-pin level trigger |
+| Touchpad | `esp_deep_sleep_enable_touchpad_wakeup()` | Touch-based user interaction |
+| ULP coprocessor | — | ADC/temperature background monitoring |
+
+### Timed data acquisition
+
+Suitable for instruments that periodically collect and upload sensor data.
+
+```c
+// 1. Collect and upload sensor data after wake-up
+collect_and_upload_sensor_data();
+
+// 2. Set timer wake-up interval (e.g. 60 seconds)
+esp_deep_sleep_enable_timer_wakeup(60 * 1000000ULL);
+
+// 3. Enter deep sleep
+esp_deep_sleep_start();
+```
+
+### GPIO-triggered exception reporting
+
+Suitable for smoke alarms and similar devices where the sensor drives a GPIO.
+
+```c
+// Pull-up/pull-down the RTC GPIO
+rtc_gpio_pullup_en(MY_RTC_WAKEUP_IO);
+
+// Configure wake-up source: wake when pin is low
+esp_sleep_enable_ext0_wakeup(MY_RTC_WAKEUP_IO, WAKEUP_IO_LEVEL);
+
+// Enter deep sleep; chip wakes only on GPIO event
+esp_deep_sleep_start();
+```
+
+<Note>
+  This scenario achieves the lowest possible current consumption, but requires that the sensor hardware is capable of driving a GPIO output.
+</Note>
+
+### ULP coprocessor data acquisition
+
+Use when sensors cannot trigger a GPIO themselves and full wake-up is not needed for every sample.
+
+<Steps>
+  <Step title="Load ULP program into RTC slow memory">
+    ```c
+    ulp_process_macros_and_load(ULP_PROGRAM_ADDR, ulp_main_bin_start,
+                                 &ulp_main_bin_length);
+    ```
+  </Step>
+  <Step title="Set ULP timer and enable wake-up">
+    ```c
+    // Set the ULP wake-up period (e.g., 500 ms)
+    ulp_set_wakeup_period(0, 500 * 1000);
+
+    // Enable ULP wake-up from deep sleep
+    esp_sleep_enable_ulp_wakeup();
+    ```
+  </Step>
+  <Step title="Enter deep sleep">
+    ```c
+    esp_deep_sleep_start();
+    ```
+  </Step>
+  <Step title="Read collected data on wake-up">
+    ULP stores samples in RTC slow memory; read them before starting the next cycle.
+  </Step>
+</Steps>
+
+<Tip>
+  See the `examples/ulp/lp_cpu/lp_environment_sensor` example in the repository for a complete working demonstration using the LP CPU coprocessor to monitor environmental sensors in deep sleep.
+</Tip>
+
+---
+
+## Light sleep
+
+In Light-sleep mode, CPUs and most RAM are clock-gated and supply voltage is reduced. Unlike deep sleep, program execution resumes from where it was paused—no reboot occurs.
+
+### Entry and resume timing (ESP32)
+
+- **Entry latency**: ~200 µs from `esp_light_sleep_start()` call
+- **Resume latency**: ~566 µs after wake-up source triggers
+
+### Current consumption (ESP32)
+
+| Wake source | Current during sleep |
+|-------------|---------------------|
+| ext0        | 1.15 mA             |
+| ext1        | 1.14 mA             |
+| timer       | 0.79 mA             |
+
+```c
+// Enable ext0 as wake source, then enter light sleep
+esp_sleep_enable_ext0_wakeup(GPIO_NUM_34, 0);
+esp_light_sleep_start();
+// Execution resumes here after wake-up
+```
+
+<Warning>
+  GPIOs powered by `VDD3P3_CPU` should be disabled before entering Light-sleep to avoid ~1.5 mA of leakage current from GPIO pads.
+</Warning>
+
+---
+
+## Dynamic Frequency Scaling (DFS)
+
+DFS adjusts the CPU and APB clock frequency dynamically so the chip runs at a lower frequency (and lower power) when there is no time-critical work to do.
+
+### Current consumption vs. CPU frequency (ESP32)
+
+| CPU frequency | Current |
+|---------------|---------|
+| XTAL (40 MHz) | 13.32 mA |
+| 80 MHz        | 22.85 mA |
+| 160 MHz       | 28.46 mA |
+| 240 MHz       | 39.95 mA |
+
+### Configuration
+
+<Steps>
+  <Step title="Enable power management in menuconfig">
+    ```
+    Component config → Power Management → [*] Support for power management
+    ```
+  </Step>
+  <Step title="Call esp_pm_configure() to set frequency limits">
+    ```c
+    esp_pm_config_esp32_t pm_config = {
+        .max_cpu_freq = RTC_CPU_FREQ_240M,
+        .min_cpu_freq = RTC_CPU_FREQ_XTAL,
+    };
+    esp_err_t ret = esp_pm_configure(&pm_config);
+    ```
+  </Step>
+  <Step title="Create a lock handle">
+    ```c
+    esp_pm_lock_handle_t pm_lock;
+    esp_pm_lock_create(ESP_PM_APB_FREQ_MAX, 1, "CPU_FREQ_MAX", &pm_lock);
+    ```
+  </Step>
+  <Step title="Acquire and release the lock around performance-sensitive code">
+    ```c
+    if (esp_pm_lock_acquire(pm_lock) == ESP_OK) {
+        // CPU runs at max_cpu_freq while lock is held
+        do_time_critical_work();
+        esp_pm_lock_release(pm_lock);
+        // CPU drops to min_cpu_freq when task blocks
+    }
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Peripherals such as UART, LEDC, and RMT can use `REF_TICK` as their clock source instead of APB. This keeps their frequency stable even when DFS switches the APB clock.
+</Note>
+
+---
+
+## ULP coprocessor
+
+The Ultra Low Power (ULP) coprocessor runs independently while the main CPU is in deep sleep. It can access RTC slow memory and RTC registers, perform ADC sampling, and wake the main CPU when specific conditions are met.
+
+<AccordionGroup>
+  <Accordion title="Supported operations">
+    - On-chip temperature sensor monitoring
+    - ADC channel sampling
+    - RTC slow memory read/write
+    - Wake-up trigger to main CPU
+  </Accordion>
+  <Accordion title="Memory layout">
+    - **RTC fast memory**: Stores the `esp_wake_deep_sleep()` wake stub, executed before the bootloader on every wake.
+    - **RTC slow memory**: Stores ULP program code and data collected during deep sleep.
+  </Accordion>
+</AccordionGroup>
+
+Use the standard ESP-IDF ULP APIs to load your ULP program and configure it to wake the main CPU:
+
+```c
+// Load the ULP program (generated from assembly or LP-core C code)
+ulp_process_macros_and_load(0, ulp_main_bin_start, &ulp_main_bin_length);
+
+// Set ULP wake-up period
+ulp_set_wakeup_period(0, 500 * 1000); // 500 ms
+
+// Enable ULP as a deep-sleep wake source
+esp_sleep_enable_ulp_wakeup();
+
+// Start the ULP coprocessor
+ulp_run((&ulp_entry - RTC_SLOW_MEM) / sizeof(uint32_t));
+
+// Enter deep sleep; ULP runs while CPU is off
+esp_deep_sleep_start();
+```
+
+---
+
+## ESP32-P4 VBAT battery backup
+
+The ESP32-P4 integrates RTC functionality with a dedicated VBAT pin that can power the RTC domain from a backup battery when the main VDDA supply is removed.
+
+<Warning>
+  Do not connect a 3.6 V rechargeable battery directly. A fully charged 3.6 V cell can reach ~4 V, exceeding the VBAT pin's 2.3 V–3.6 V input range.
+</Warning>
+
+### Features
+
+- RTC timekeeping continues after main power loss
+- PMU automatically switches between VDDA and VBAT during sleep/wake transitions
+- Built-in charging protection (no external resistor or diode required)
+- Battery voltage monitoring with programmable BOD threshold alarms
+- Charging support: when VDDA is present, VBAT can be charged through an internal resistor (1 kΩ–9 kΩ configurable)
+
+### Measured current (deep sleep)
+
+| Sleep mode    | VBAT current |
+|---------------|-------------|
+| Deep sleep    | 7 µA        |
+| Light sleep   | 21 µA       |
+
+A CR2032 (225 mAh) provides a theoretical standby time of **~3.67 years** in deep sleep.
+
+### Power switching modes
+
+Configure the `PMU_HP_SLEEP_VDDBAT_MODE` field before entering sleep:
+
+<Tabs>
+  <Tab title="Auto switching">
+    ```c
+    #define VBAT_MODE_AUTO 2
+
+    REG_SET_FIELD(PMU_HP_SLEEP_LP_DIG_POWER_REG,
+                  PMU_HP_SLEEP_VDDBAT_MODE, VBAT_MODE_AUTO);
+    REG_SET_BIT(PMU_VDDBAT_CFG_REG, PMU_VDDBAT_SW_UPDATE);
+    while (VBAT_MODE_AUTO !=
+           REG_GET_FIELD(PMU_VDDBAT_CFG_REG, PMU_ANA_VDDBAT_MODE));
+    ```
+  </Tab>
+  <Tab title="Manual (VDDA during HP_SLEEP, VBAT during LP_SLEEP)">
+    ```c
+    #define VBAT_MODE_VDDA 0
+    #define VBAT_MODE_VBAT 1
+
+    REG_SET_FIELD(PMU_HP_SLEEP_LP_DIG_POWER_REG,
+                  PMU_HP_SLEEP_VDDBAT_MODE, VBAT_MODE_VDDA);
+    REG_SET_BIT(PMU_VDDBAT_CFG_REG, PMU_VDDBAT_SW_UPDATE);
+    while (VBAT_MODE_VDDA !=
+           REG_GET_FIELD(PMU_VDDBAT_CFG_REG, PMU_ANA_VDDBAT_MODE));
+
+    REG_SET_FIELD(PMU_LP_SLEEP_LP_DIG_POWER_REG,
+                  PMU_LP_SLEEP_VDDBAT_MODE, VBAT_MODE_VBAT);
+    REG_SET_FIELD(PMU_SLP_WAKEUP_CNTL5_REG,
+                  PMU_LP_ANA_WAIT_TARGET, 0xFF);
+    ```
+  </Tab>
+</Tabs>
+
+### Brown-out detector thresholds
+
+| Configuration | Voltage |
+|---------------|---------|
+| 0             | 2.52 V  |
+| 1             | 2.57 V  |
+| 2             | 2.63 V  |
+| 3             | 2.68 V  |
+| 4             | 2.74 V  |
+| 5             | 2.78 V  |
+| 6             | 2.83 V  |
+| 7             | 2.89 V  |
+
+### RTC timer example with VBAT
+
+```c
+time_t now;
+char strftime_buf[64];
+struct tm timeinfo;
+
+time(&now);
+localtime_r(&now, &timeinfo);
+strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
+printf("Current date/time: %s\n", strftime_buf);
+
+// Configure GPIO0 as wake source and enter deep sleep
+const gpio_config_t config = {
+    .pin_bit_mask = BIT(GPIO_NUM_0),
+    .mode = GPIO_MODE_INPUT,
+};
+ESP_ERROR_CHECK(gpio_config(&config));
+esp_deep_sleep_enable_gpio_wakeup(BIT(GPIO_NUM_0), 0);
+esp_deep_sleep_start();
+```
+
+### LP peripheral support under VBAT
+
+When powered from VBAT, the following LP peripherals remain accessible:
+
+- **LP GPIO** — general-purpose I/O in the low-power domain
+- **LP ADC** — analog-to-digital conversion
+- **LP UART** — serial communication
+
+Refer to `examples/system/ulp/lp_core` in ESP-IDF for tested example code targeting ESP32-P4.
+
+<Note>
+  ESP-IDF does not yet fully support the VBAT scheme. The power switching code shown above must be manually inserted into `components/esp_hw_support/port/esp32p4/pmu_sleep.c` until upstream support is complete.
+</Note>

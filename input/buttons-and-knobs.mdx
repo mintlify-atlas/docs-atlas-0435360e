@@ -1,0 +1,385 @@
+---
+title: Buttons and knobs
+description: GPIO buttons, ADC buttons, rotary encoder knobs, and keyboard matrix scanning for ESP32 using the ESP-IoT-Solution button and knob components.
+keywords: [button, knob, rotary encoder, keyboard matrix, GPIO, ADC, ESP32, iot_button, iot_knob]
+---
+
+ESP-IoT-Solution provides three input components for physical controls:
+
+- **Button** — GPIO buttons, ADC buttons, and matrix keypad buttons with rich event detection
+- **Knob** — Software-based rotary encoder (PCNT) for EC11-style encoders
+- **Keyboard** — Full-key-rollover matrix keyboard scanning
+
+## Button component
+
+The button component supports GPIO and ADC modes. Multiple button types can be created simultaneously in the same application.
+
+<CardGroup cols={2}>
+  <Card title="GPIO button" icon="square">
+    One GPIO per button. Stable and independent, but uses more IO resources.
+  </Card>
+  <Card title="ADC button" icon="sliders">
+    Multiple buttons share one ADC channel. Conserves IO, but does not support simultaneous presses.
+  </Card>
+</CardGroup>
+
+### Button events
+
+| Event | Trigger condition |
+|---|---|
+| `BUTTON_PRESS_DOWN` | Button pressed |
+| `BUTTON_PRESS_UP` | Button released |
+| `BUTTON_PRESS_REPEAT` | Pressed and released ≥ 2 times |
+| `BUTTON_PRESS_REPEAT_DONE` | Repeated press sequence completed |
+| `BUTTON_SINGLE_CLICK` | Pressed and released once |
+| `BUTTON_DOUBLE_CLICK` | Pressed and released twice |
+| `BUTTON_MULTIPLE_CLICK` | Pressed and released N times (configurable) |
+| `BUTTON_LONG_PRESS_START` | Held for the long-press threshold duration |
+| `BUTTON_LONG_PRESS_HOLD` | Triggered continuously while held |
+| `BUTTON_LONG_PRESS_UP` | Released after a long press |
+| `BUTTON_PRESS_END` | Button has completed its current detection cycle |
+
+<Note>
+  No blocking operations (such as `vTaskDelay`) are allowed inside callback functions.
+</Note>
+
+### Creating buttons
+
+<Tabs>
+  <Tab title="GPIO button">
+    ```c
+    #include "iot_button.h"
+
+    const button_config_t btn_cfg = {0};
+    const button_gpio_config_t btn_gpio_cfg = {
+        .gpio_num    = 0,
+        .active_level = 0,
+    };
+
+    button_handle_t gpio_btn = NULL;
+    esp_err_t ret = iot_button_new_gpio_device(&btn_cfg, &btn_gpio_cfg, &gpio_btn);
+    if (gpio_btn == NULL) {
+        ESP_LOGE(TAG, "Button create failed");
+    }
+    ```
+
+    <Note>
+      GPIO buttons enable internal pull-up/pull-down by default. GPIOs that only support input and lack internal resistors require an external pull resistor.
+    </Note>
+  </Tab>
+  <Tab title="ADC button">
+    ```c
+    #include "iot_button.h"
+
+    const button_config_t btn_cfg = {0};
+    button_adc_config_t btn_adc_cfg = {
+        .unit_id      = ADC_UNIT_1,
+        .adc_channel  = 0,
+        .button_index = 0,
+        .min          = 100,
+        .max          = 400,
+    };
+
+    button_handle_t adc_btn = NULL;
+    esp_err_t ret = iot_button_new_adc_device(&btn_cfg, &btn_adc_cfg, &adc_btn);
+    if (adc_btn == NULL) {
+        ESP_LOGE(TAG, "Button create failed");
+    }
+    ```
+
+    <Note>
+      If ADC1 is already in use elsewhere in the project, pass your existing `adc_oneshot_unit_handle_t` via the `adc_handle` field of `button_adc_config_t` instead of letting the component create a new unit.
+    </Note>
+  </Tab>
+  <Tab title="Matrix keypad">
+    ```c
+    #include "iot_button.h"
+
+    const button_config_t btn_cfg = {0};
+    const button_matrix_config_t matrix_cfg = {
+        .row_gpios    = (int32_t[]){4, 5, 6, 7},
+        .col_gpios    = (int32_t[]){3, 8, 16, 15},
+        .row_gpio_num = 4,
+        .col_gpio_num = 4,
+    };
+
+    button_handle_t matrix_button = NULL;
+    esp_err_t ret = iot_button_new_matrix_device(
+        &btn_cfg, &matrix_cfg, btns, &matrix_button);
+    if (matrix_button == NULL) {
+        ESP_LOGE(TAG, "Button create failed");
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Registering callbacks
+
+Each button event supports one or more callback functions. The callback receives the button handle and optional user data.
+
+```c
+static void button_single_click_cb(void *arg, void *usr_data)
+{
+    ESP_LOGI(TAG, "BUTTON_SINGLE_CLICK");
+}
+
+iot_button_register_cb(gpio_btn, BUTTON_SINGLE_CLICK, NULL,
+                       button_single_click_cb, NULL);
+```
+
+For `BUTTON_LONG_PRESS_START` and `BUTTON_LONG_PRESS_UP`, you can register multiple callbacks at different time thresholds using `button_event_args_t`:
+
+```c
+static void long_press_2s_cb(void *arg, void *usr_data)
+{
+    ESP_LOGI(TAG, "Long press: 2 seconds");
+}
+
+static void long_press_5s_cb(void *arg, void *usr_data)
+{
+    ESP_LOGI(TAG, "Long press: 5 seconds");
+}
+
+button_event_args_t args = {
+    .long_press.press_time = 2000,
+};
+iot_button_register_cb(gpio_btn, BUTTON_LONG_PRESS_START, &args,
+                       long_press_2s_cb, NULL);
+
+args.long_press.press_time = 5000;
+iot_button_register_cb(gpio_btn, BUTTON_LONG_PRESS_START, &args,
+                       long_press_5s_cb, NULL);
+```
+
+### Polling mode
+
+You can poll the current button event instead of using callbacks:
+
+```c
+button_event_t event = iot_button_get_event(gpio_btn);
+```
+
+### Dynamic parameter changes
+
+```c
+// Change long press threshold to 5000 ms at runtime
+iot_button_set_param(gpio_btn, BUTTON_LONG_PRESS_TIME_MS, (void *)5000);
+```
+
+### Low power mode
+
+Enable `enable_power_save` on GPIO buttons to suspend the `esp_timer` scan and use GPIO level wake-up instead. This significantly reduces average current when the button is idle.
+
+```c
+button_config_t btn_cfg = {0};
+button_gpio_config_t gpio_cfg = {
+    .gpio_num          = 0,
+    .active_level      = 0,
+    .enable_power_save = true,
+};
+
+button_handle_t btn;
+iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &btn);
+```
+
+To get a notification when the component is safe for the CPU to enter light sleep:
+
+```c
+void btn_enter_power_save(void *usr_data)
+{
+    ESP_LOGI(TAG, "Can enter power save now");
+}
+
+button_power_save_config_t config = {
+    .enter_power_save_cb = btn_enter_power_save,
+};
+iot_button_register_power_save_cb(&config);
+```
+
+<Warning>
+  Low power mode requires all created buttons to be GPIO type with `enable_power_save` enabled. Other button types prevent the mode from taking effect.
+</Warning>
+
+### Stop and resume
+
+```c
+iot_button_stop();   // Pause button scanning
+iot_button_resume(); // Resume button scanning
+```
+
+### Button API reference
+
+| Function | Description |
+|---|---|
+| `iot_button_new_gpio_device(cfg, gpio_cfg, handle)` | Create a GPIO button |
+| `iot_button_new_adc_device(cfg, adc_cfg, handle)` | Create an ADC button |
+| `iot_button_new_matrix_device(cfg, matrix_cfg, btns, handle)` | Create a matrix keypad button |
+| `iot_button_delete(handle)` | Delete a button and free resources |
+| `iot_button_register_cb(handle, event, args, cb, data)` | Register an event callback |
+| `iot_button_unregister_cb(handle, event, args)` | Unregister all callbacks for an event |
+| `iot_button_get_event(handle)` | Get the current button event (polling) |
+| `iot_button_get_event_str(event)` | Get a string name for an event |
+| `iot_button_get_repeat(handle)` | Get the current repeat count |
+| `iot_button_get_pressed_time(handle)` | Get press duration in ms |
+| `iot_button_get_long_press_hold_cnt(handle)` | Get long-press hold trigger count |
+| `iot_button_set_param(handle, param, value)` | Dynamically update a button parameter |
+| `iot_button_get_key_level(handle)` | Get current physical key level (1 = pressed) |
+| `iot_button_stop()` | Stop button scanning |
+| `iot_button_resume()` | Resume button scanning |
+| `iot_button_register_power_save_cb(config)` | Register power-save entry callback |
+
+---
+
+## Knob (rotary encoder) component
+
+The Knob component implements software PCNT pulse counting, enabling use of rotary encoders such as the EC11 on chips without hardware PCNT (e.g., ESP32-C2, ESP32-C3).
+
+<Note>
+  Suitable for low-speed encoders at under 30 pulses/second. For high-speed or precision counting, use the [hardware PCNT peripheral](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/pcnt.html) available on ESP32, ESP32-C6, ESP32-H2, ESP32-S2, and ESP32-S3.
+</Note>
+
+### Knob events
+
+| Event | Trigger condition |
+|---|---|
+| `KNOB_LEFT` | Rotated left |
+| `KNOB_RIGHT` | Rotated right |
+| `KNOB_H_LIM` | Count reached the maximum limit |
+| `KNOB_L_LIM` | Count reached the minimum limit |
+| `KNOB_ZERO` | Count returned to 0 |
+
+### Creating a knob and registering callbacks
+
+```c
+#include "iot_knob.h"
+
+knob_config_t cfg = {
+    .default_direction = 0,          // 0: positive on right rotation
+    .gpio_encoder_a    = GPIO_KNOB_A,
+    .gpio_encoder_b    = GPIO_KNOB_B,
+};
+
+knob_handle_t knob = iot_knob_create(&cfg);
+if (knob == NULL) {
+    ESP_LOGE(TAG, "Knob create failed");
+}
+
+static void knob_left_cb(void *arg, void *data)
+{
+    ESP_LOGI(TAG, "Left, count: %d",
+             iot_knob_get_count_value((knob_handle_t)arg));
+}
+
+static void knob_right_cb(void *arg, void *data)
+{
+    ESP_LOGI(TAG, "Right, count: %d",
+             iot_knob_get_count_value((knob_handle_t)arg));
+}
+
+iot_knob_register_cb(knob, KNOB_LEFT,  knob_left_cb,  NULL);
+iot_knob_register_cb(knob, KNOB_RIGHT, knob_right_cb, NULL);
+```
+
+### Knob low power mode
+
+Set `enable_power_save = true` in `knob_config_t` to use GPIO level wake-up rather than timer-based scanning, reducing idle power consumption.
+
+### Stop and resume
+
+```c
+iot_knob_stop();    // Pause knob scanning
+iot_knob_resume();  // Resume knob scanning
+```
+
+### Knob API reference
+
+| Function | Description |
+|---|---|
+| `iot_knob_create(config)` | Create a knob instance |
+| `iot_knob_delete(handle)` | Delete a knob and free resources |
+| `iot_knob_register_cb(handle, event, cb, data)` | Register a callback for a knob event |
+| `iot_knob_unregister_cb(handle, event)` | Unregister a callback |
+| `iot_knob_get_event(handle)` | Get the current knob event |
+| `iot_knob_get_count_value(handle)` | Get the current pulse count |
+| `iot_knob_clear_count_value(handle)` | Reset the count to zero |
+| `iot_knob_stop()` | Stop knob scanning |
+| `iot_knob_resume()` | Resume knob scanning |
+
+---
+
+## Keyboard matrix component
+
+The Keyboard component implements full-key-rollover matrix scanning using a special circuit design. Rows output high-level signals sequentially while columns are checked for highs, indicating which keys are pressed.
+
+<Note>
+  This component is designed specifically for full-key-rollover circuits and is not compatible with traditional diode-based row-column scanning circuits.
+</Note>
+
+### Keyboard events
+
+| Event | Description |
+|---|---|
+| `KBD_EVENT_PRESSED` | Reports changes in key states (press or release) |
+| `KBD_EVENT_COMBINATION` | Triggered when a configured combination key sequence is detected |
+
+`KBD_EVENT_PRESSED` event data includes:
+- `key_pressed_num` — total keys currently held
+- `key_release_num` — keys released in this event
+- `key_change_num` — change count (positive = more keys pressed, negative = fewer)
+- `key_data` — positions (x, y) of currently pressed keys
+- `key_release_data` — positions of released keys
+
+### Initializing keyboard scanning
+
+```c
+#include "keyboard_button.h"
+
+keyboard_btn_config_t cfg = {
+    .output_gpios = (int[]){40, 39, 38, 45, 48, 47},
+    .output_gpio_num = 6,
+    .input_gpios = (int[]){21, 14, 13, 12, 11, 10, 9, 4, 5, 6, 7, 15, 16, 17, 18},
+    .input_gpio_num  = 15,
+    .active_level    = 1,
+    .debounce_ticks  = 2,
+    .ticks_interval  = 500,       // microseconds
+    .enable_power_save = false,
+};
+
+keyboard_btn_handle_t kbd_handle = NULL;
+keyboard_button_create(&cfg, &kbd_handle);
+```
+
+### Registering keyboard callbacks
+
+```c
+// Key press/release events
+keyboard_btn_cb_config_t cb_cfg = {
+    .event    = KBD_EVENT_PRESSED,
+    .callback = keyboard_cb,
+};
+keyboard_button_register_cb(kbd_handle, cb_cfg, NULL);
+
+// Combination key event
+keyboard_btn_cb_config_t combo_cfg = {
+    .event    = KBD_EVENT_COMBINATION,
+    .callback = keyboard_combination_cb,
+    .event_data.combination.key_num  = 2,
+    .event_data.combination.key_data = (keyboard_btn_data_t[]){
+        {5, 1},
+        {1, 1},
+    },
+};
+keyboard_button_register_cb(kbd_handle, combo_cfg, NULL);
+```
+
+<Tip>
+  Save the returned `keyboard_btn_cb_handle_t` when registering multiple callbacks on the same event so you can unregister specific callbacks later without removing all of them.
+</Tip>
+
+### Performance
+
+On an ESP32-S3 scanning a 5×16 matrix keyboard, the component achieves a maximum scan rate of 20,000 scans/second.
+
+### Keyboard low power mode
+
+Set `enable_power_save = true` during initialization. When no key state changes occur, scanning is suspended and the CPU can enter light sleep. The CPU wakes on the next key press.

@@ -1,0 +1,316 @@
+---
+title: "Servo Motor Control"
+description: "Control servo motors over PWM using the ESP-IDF LEDC peripheral. Supports up to 16 independent channels, configurable frequency, pulse width, and angle range."
+---
+
+The `servo` component uses the ESP-IDF LEDC peripheral to generate PWM signals for independent angle control of up to 16 servo channels (8 channels on ESP32-S2). You specify the target angle per channel — the component calculates the correct duty cycle automatically.
+
+PWM frequency is configurable from 50 Hz to 400 Hz. A standard 180° servo typically uses a 50 Hz (20 ms) period with a 0.5 ms to 2.5 ms pulse width corresponding to 0°–180°.
+
+<Note>
+  This component is suited for applications with moderate position accuracy requirements — toy vehicles, remote-control robots, home automation, and similar use cases.
+</Note>
+
+## Adding the component
+
+```bash
+idf.py add-dependency "espressif/servo"
+```
+
+## Configuration
+
+All servo parameters are set in a single `servo_config_t` structure passed to `iot_servo_init`.
+
+### `servo_config_t`
+
+```c
+typedef struct {
+    uint16_t max_angle;        // Maximum servo angle in degrees
+    uint16_t min_width_us;     // Pulse width at minimum angle (µs), typically 500
+    uint16_t max_width_us;     // Pulse width at maximum angle (µs), typically 2500
+    uint32_t freq;             // PWM frequency in Hz (50–400)
+    ledc_timer_t timer_number; // LEDC timer to use
+    servo_channel_t channels;  // GPIO pins and LEDC channels
+    uint8_t channel_number;    // Number of channels to configure
+} servo_config_t;
+```
+
+### `servo_channel_t`
+
+```c
+typedef struct {
+    gpio_num_t servo_pin[LEDC_CHANNEL_MAX];  // GPIO pin for each channel
+    ledc_channel_t ch[LEDC_CHANNEL_MAX];     // LEDC channel for each servo
+} servo_channel_t;
+```
+
+### Configuration parameters
+
+<ParamField path="max_angle" type="uint16_t" required>
+  Maximum rotation angle in degrees. Typical value is `180`.
+</ParamField>
+
+<ParamField path="min_width_us" type="uint16_t" required>
+  PWM pulse width in microseconds corresponding to 0° (minimum angle). Typical value is `500`.
+</ParamField>
+
+<ParamField path="max_width_us" type="uint16_t" required>
+  PWM pulse width in microseconds corresponding to `max_angle` (maximum angle). Typical value is `2500`.
+</ParamField>
+
+<ParamField path="freq" type="uint32_t" required>
+  PWM frequency in Hz. Range: 50–400. Standard servos use `50`.
+</ParamField>
+
+<ParamField path="timer_number" type="ledc_timer_t" required>
+  LEDC timer index to use (`LEDC_TIMER_0` through `LEDC_TIMER_3`).
+</ParamField>
+
+<ParamField path="channels" type="servo_channel_t" required>
+  Array of GPIO pins (`servo_pin`) and LEDC channels (`ch`) for each servo.
+</ParamField>
+
+<ParamField path="channel_number" type="uint8_t" required>
+  Number of servo channels to initialize (1 to `LEDC_CHANNEL_MAX`).
+</ParamField>
+
+---
+
+## API reference
+
+### `iot_servo_init`
+
+```c
+esp_err_t iot_servo_init(ledc_mode_t speed_mode, const servo_config_t *config);
+```
+
+Initialize the LEDC peripheral and configure all specified servo channels.
+
+<ParamField path="speed_mode" type="ledc_mode_t" required>
+  LEDC channel group. Use `LEDC_LOW_SPEED_MODE` or `LEDC_HIGH_SPEED_MODE`. Note that ESP32-S2 and later chips only support `LEDC_LOW_SPEED_MODE`.
+</ParamField>
+<ParamField path="config" type="const servo_config_t *" required>
+  Pointer to the servo configuration structure.
+</ParamField>
+
+**Returns:**
+
+| Value | Meaning |
+|-------|---------|
+| `ESP_OK` | Success |
+| `ESP_ERR_INVALID_ARG` | Invalid argument |
+| `ESP_FAIL` | LEDC configuration failed |
+
+---
+
+### `iot_servo_deinit`
+
+```c
+esp_err_t iot_servo_deinit(ledc_mode_t speed_mode);
+```
+
+Deinitialize all servo channels in the given speed mode and release the LEDC timer.
+
+<ParamField path="speed_mode" type="ledc_mode_t" required>
+  The same speed mode passed to `iot_servo_init`.
+</ParamField>
+
+**Returns:**
+
+| Value | Meaning |
+|-------|---------|
+| `ESP_OK` | Success |
+
+---
+
+### `iot_servo_write_angle`
+
+```c
+esp_err_t iot_servo_write_angle(ledc_mode_t speed_mode, uint8_t channel, float angle);
+```
+
+Set a servo to a target angle. The function converts the angle to the corresponding PWM duty cycle.
+
+<Warning>
+  This API is not thread-safe. Do not call it from multiple tasks simultaneously on the same channel without external synchronization.
+</Warning>
+
+<ParamField path="speed_mode" type="ledc_mode_t" required>
+  LEDC channel group (`LEDC_LOW_SPEED_MODE` or `LEDC_HIGH_SPEED_MODE`).
+</ParamField>
+<ParamField path="channel" type="uint8_t" required>
+  Zero-based channel index within the configured group (e.g. `0` for `LEDC_CHANNEL_0`).
+</ParamField>
+<ParamField path="angle" type="float" required>
+  Target angle in degrees. Must be within `[0, max_angle]`.
+</ParamField>
+
+**Returns:**
+
+| Value | Meaning |
+|-------|---------|
+| `ESP_OK` | Success |
+| `ESP_ERR_INVALID_ARG` | Invalid argument |
+
+---
+
+### `iot_servo_read_angle`
+
+```c
+esp_err_t iot_servo_read_angle(ledc_mode_t speed_mode, uint8_t channel, float *angle);
+```
+
+Read the current angle of a servo channel.
+
+<Note>
+  The returned value is a theoretical angle calculated from the currently programmed duty cycle — it reflects the last commanded angle, not a measured position.
+</Note>
+
+<ParamField path="speed_mode" type="ledc_mode_t" required>
+  LEDC channel group.
+</ParamField>
+<ParamField path="channel" type="uint8_t" required>
+  Zero-based channel index.
+</ParamField>
+<ParamField path="angle" type="float *" required>
+  Pointer to a `float` variable that receives the current angle in degrees.
+</ParamField>
+
+**Returns:**
+
+| Value | Meaning |
+|-------|---------|
+| `ESP_OK` | Success |
+| `ESP_ERR_INVALID_ARG` | Invalid argument |
+
+---
+
+## Code examples
+
+### Single servo
+
+<Steps>
+  <Step title="Configure and initialize">
+    ```c
+    #include "iot_servo.h"
+
+    #define SERVO_PIN   GPIO_NUM_18
+
+    servo_config_t servo_cfg = {
+        .max_angle = 180,
+        .min_width_us = 500,
+        .max_width_us = 2500,
+        .freq = 50,
+        .timer_number = LEDC_TIMER_0,
+        .channels = {
+            .servo_pin = { SERVO_PIN },
+            .ch = { LEDC_CHANNEL_0 },
+        },
+        .channel_number = 1,
+    };
+
+    iot_servo_init(LEDC_LOW_SPEED_MODE, &servo_cfg);
+    ```
+  </Step>
+  <Step title="Set angle">
+    ```c
+    // Move to 90 degrees
+    iot_servo_write_angle(LEDC_LOW_SPEED_MODE, 0, 90.0f);
+    ```
+  </Step>
+  <Step title="Read back angle">
+    ```c
+    float current_angle = 0.0f;
+    iot_servo_read_angle(LEDC_LOW_SPEED_MODE, 0, &current_angle);
+    ```
+  </Step>
+  <Step title="Deinitialize">
+    ```c
+    iot_servo_deinit(LEDC_LOW_SPEED_MODE);
+    ```
+  </Step>
+</Steps>
+
+### Multiple servo channels
+
+The component supports up to 16 channels (8 on ESP32-S2) in a single initialization call. All channels share the same frequency, angle range, and pulse width configuration.
+
+```c
+#include "iot_servo.h"
+
+#define SERVO_CH0_PIN  GPIO_NUM_4
+#define SERVO_CH1_PIN  GPIO_NUM_5
+#define SERVO_CH2_PIN  GPIO_NUM_6
+#define SERVO_CH3_PIN  GPIO_NUM_7
+
+servo_config_t servo_cfg = {
+    .max_angle = 180,
+    .min_width_us = 500,
+    .max_width_us = 2500,
+    .freq = 50,
+    .timer_number = LEDC_TIMER_0,
+    .channels = {
+        .servo_pin = {
+            SERVO_CH0_PIN,
+            SERVO_CH1_PIN,
+            SERVO_CH2_PIN,
+            SERVO_CH3_PIN,
+        },
+        .ch = {
+            LEDC_CHANNEL_0,
+            LEDC_CHANNEL_1,
+            LEDC_CHANNEL_2,
+            LEDC_CHANNEL_3,
+        },
+    },
+    .channel_number = 4,
+};
+
+iot_servo_init(LEDC_LOW_SPEED_MODE, &servo_cfg);
+
+// Drive each channel to a different angle
+iot_servo_write_angle(LEDC_LOW_SPEED_MODE, 0,   0.0f);
+iot_servo_write_angle(LEDC_LOW_SPEED_MODE, 1,  45.0f);
+iot_servo_write_angle(LEDC_LOW_SPEED_MODE, 2,  90.0f);
+iot_servo_write_angle(LEDC_LOW_SPEED_MODE, 3, 135.0f);
+```
+
+### Sweep example
+
+```c
+#include "iot_servo.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+void servo_sweep_task(void *pvParameters)
+{
+    float angle = 0.0f;
+    float step = 1.0f;
+
+    while (1) {
+        iot_servo_write_angle(LEDC_LOW_SPEED_MODE, 0, angle);
+        angle += step;
+
+        if (angle >= 180.0f || angle <= 0.0f) {
+            step = -step;  // Reverse direction at limits
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+```
+
+---
+
+## Channel limits
+
+| Chip | Low speed channels | High speed channels |
+|------|-------------------|---------------------|
+| ESP32 | 8 | 8 (total 16) |
+| ESP32-S2 | 8 | — |
+| ESP32-S3 | 8 | — |
+| ESP32-C3 | 6 | — |
+
+<Tip>
+  ESP32 supports both `LEDC_LOW_SPEED_MODE` and `LEDC_HIGH_SPEED_MODE`, giving you 16 independent channels across two groups. Initialize each group separately with its own `servo_config_t` and timer.
+</Tip>

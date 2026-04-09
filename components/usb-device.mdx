@@ -1,0 +1,259 @@
+---
+title: "USB Device components"
+description: "Reference for ESP-IoT-Solution USB device components: UAC audio, UVC video, and TinyUF2 OTA bootloader."
+---
+
+ESP-IoT-Solution provides USB device components that turn an ESP32-S2, ESP32-S3, or ESP32-P4 into a USB peripheral. All components are built on [TinyUSB](https://github.com/hathach/tinyusb).
+
+<CardGroup cols={3}>
+  <Card title="USB Device UAC" icon="microphone" href="#usb-device-uac">
+    Present the chip as a USB audio device (speaker + mic).
+  </Card>
+  <Card title="USB Device UVC" icon="camera" href="#usb-device-uvc">
+    Present the chip as a USB camera device.
+  </Card>
+  <Card title="TinyUF2" icon="usb" href="#tinyuf2">
+    Drag-and-drop OTA via a virtual USB mass storage disk.
+  </Card>
+</CardGroup>
+
+---
+
+## USB Device UAC
+
+**Component:** `usb_device_uac`  
+**Install:** `idf.py add-dependency "espressif/usb_device_uac"`
+
+`usb_device_uac` implements USB Audio Class 2.0. The chip enumerates as a composite audio device with configurable speaker output and microphone input channels, sample rates, and bit depths. ISO Feedback is enabled by default for automatic rate synchronization with the host.
+
+### Configuration structure
+
+```c
+typedef struct {
+    bool              skip_tinyusb_init; /*!< Skip TinyUSB/PHY init if already done */
+    uac_output_cb_t   output_cb;         /*!< Speaker data ready for playback */
+    uac_input_cb_t    input_cb;          /*!< Microphone data requested by host */
+    uac_set_mute_cb_t set_mute_cb;       /*!< Host mute/unmute command */
+    uac_set_volume_cb_t set_volume_cb;   /*!< Host volume change command */
+    void             *cb_ctx;            /*!< Passed to every callback */
+} uac_device_config_t;
+```
+
+### Callback signatures
+
+| Typedef | Signature | Purpose |
+|---|---|---|
+| `uac_output_cb_t` | `esp_err_t cb(uint8_t *buf, size_t len, void *ctx)` | Consume speaker PCM data from the host. |
+| `uac_input_cb_t` | `esp_err_t cb(uint8_t *buf, size_t len, size_t *bytes_read, void *ctx)` | Supply microphone PCM data to the host. |
+| `uac_set_mute_cb_t` | `void cb(uint32_t mute, void *ctx)` | React to host mute/unmute requests. |
+| `uac_set_volume_cb_t` | `void cb(uint32_t volume, void *ctx)` | React to host volume change (0–100). |
+
+### Init function
+
+```c
+esp_err_t uac_device_init(uac_device_config_t *config);
+```
+
+### UAC usage example
+
+```c
+static esp_err_t spk_output_cb(uint8_t *buf, size_t len, void *ctx)
+{
+    /* write `len` bytes of PCM audio to your I2S DAC */
+    return i2s_write(I2S_NUM_0, buf, len, NULL, portMAX_DELAY);
+}
+
+static esp_err_t mic_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void *ctx)
+{
+    /* read `len` bytes of PCM audio from your I2S ADC */
+    return i2s_read(I2S_NUM_0, buf, len, bytes_read, portMAX_DELAY);
+}
+
+static void set_mute_cb(uint32_t mute, void *ctx)
+{
+    ESP_LOGI("UAC", "mute=%lu", mute);
+}
+
+static void set_volume_cb(uint32_t volume, void *ctx)
+{
+    ESP_LOGI("UAC", "volume=%lu", volume);
+}
+
+void app_main(void)
+{
+    uac_device_config_t cfg = {
+        .output_cb    = spk_output_cb,
+        .input_cb     = mic_input_cb,
+        .set_mute_cb  = set_mute_cb,
+        .set_volume_cb = set_volume_cb,
+        .cb_ctx       = NULL,
+    };
+    ESP_ERROR_CHECK(uac_device_init(&cfg));
+}
+```
+
+<Note>
+The microphone `input_cb` is called on a strict timeline. Transfer audio data promptly or block until data is ready. Avoid long delays that would underrun the host's audio buffer.
+</Note>
+
+---
+
+## USB Device UVC
+
+**Component:** `usb_device_uvc`  
+**Install:** `idf.py add-dependency "espressif/usb_device_uvc"`
+
+`usb_device_uvc` implements USB Video Class. The chip enumerates as a UVC camera. Up to two UVC devices can be registered (index 0 and 1). The host controls format negotiation; your application supplies frame buffers on demand via callbacks.
+
+### Configuration structure
+
+```c
+typedef struct {
+    uint8_t                 *uvc_buffer;      /*!< Transfer buffer (>= one full frame) */
+    uint32_t                 uvc_buffer_size; /*!< Transfer buffer size in bytes */
+    uvc_input_start_cb_t     start_cb;        /*!< Host opened the camera */
+    uvc_input_fb_get_cb_t    fb_get_cb;       /*!< Host requests next frame */
+    uvc_input_fb_return_cb_t fb_return_cb;    /*!< Host finished with a frame */
+    uvc_input_stop_cb_t      stop_cb;         /*!< Host closed the camera */
+    void                    *cb_ctx;          /*!< Passed to every callback */
+} uvc_device_config_t;
+```
+
+### Callback signatures
+
+| Typedef | Signature | Purpose |
+|---|---|---|
+| `uvc_input_start_cb_t` | `esp_err_t cb(uvc_format_t fmt, int w, int h, int rate, void *ctx)` | Negotiate format; start your camera. |
+| `uvc_input_fb_get_cb_t` | `uvc_fb_t* cb(void *ctx)` | Return a pointer to the next compressed frame. |
+| `uvc_input_fb_return_cb_t` | `void cb(uvc_fb_t *fb, void *ctx)` | Recycle the frame buffer after transmission. |
+| `uvc_input_stop_cb_t` | `void cb(void *ctx)` | Host closed the stream; stop your camera. |
+
+### Init functions
+
+```c
+/* Register config for device at index (0 or 1) */
+esp_err_t uvc_device_config(int index, uvc_device_config_t *config);
+
+/* Finalize init — device becomes visible to the host */
+esp_err_t uvc_device_init(void);
+
+/* Teardown */
+esp_err_t uvc_device_deinit(void);
+```
+
+### UVC usage example
+
+```c
+static uint8_t uvc_buf[60 * 1024];
+
+static esp_err_t on_start(uvc_format_t fmt, int w, int h, int rate, void *ctx)
+{
+    ESP_LOGI("UVC", "host opened: %dx%d @%dfps fmt=%d", w, h, rate, fmt);
+    /* configure and start your camera sensor here */
+    return ESP_OK;
+}
+
+static uvc_fb_t *on_fb_get(void *ctx)
+{
+    /* return a pointer to the latest captured JPEG frame */
+    return camera_get_frame();
+}
+
+static void on_fb_return(uvc_fb_t *fb, void *ctx)
+{
+    camera_return_frame(fb);
+}
+
+static void on_stop(void *ctx)
+{
+    camera_stop();
+}
+
+void app_main(void)
+{
+    uvc_device_config_t cfg = {
+        .uvc_buffer      = uvc_buf,
+        .uvc_buffer_size = sizeof(uvc_buf),
+        .start_cb        = on_start,
+        .fb_get_cb       = on_fb_get,
+        .fb_return_cb    = on_fb_return,
+        .stop_cb         = on_stop,
+    };
+    ESP_ERROR_CHECK(uvc_device_config(0, &cfg));
+    ESP_ERROR_CHECK(uvc_device_init());
+}
+```
+
+<Tip>
+`uvc_buffer_size` must be larger than one complete compressed frame. For JPEG at 320×240, 60 KB is a safe starting point; increase it for higher resolutions or H.264.
+</Tip>
+
+---
+
+## TinyUF2
+
+**Component:** `esp_tinyuf2`  
+**Install:** `idf.py add-dependency "espressif/esp_tinyuf2"`
+
+TinyUF2 exposes a virtual USB mass storage disk. When a valid UF2 firmware file is dragged onto the disk, it is written to the configured OTA partition and the device restarts automatically. NVS keys can also be configured by placing a `CONFIG.ini` file on the disk.
+
+### Configuration structures
+
+```c
+/* OTA update config */
+typedef struct {
+    esp_partition_subtype_t subtype;    /*!< Target partition; ANY = next OTA slot */
+    const char             *label;      /*!< Partition label, or NULL */
+    bool                    if_restart; /*!< Auto-restart after flashing */
+    update_complete_cb_t    complete_cb;/*!< Called after successful flash */
+} tinyuf2_ota_config_t;
+
+/* NVS config-file config */
+typedef struct {
+    const char       *part_name;      /*!< NVS partition name */
+    const char       *namespace_name; /*!< NVS namespace */
+    nvs_modified_cb_t modified_cb;    /*!< Called after CONFIG.ini is applied */
+} tinyuf2_nvs_config_t;
+```
+
+### Key API
+
+| Function | Description |
+|---|---|
+| `esp_tinyuf2_install` | Install TinyUF2; pass `NULL` for either config to disable that feature. |
+| `esp_tinyuf2_uninstall` | Remove TinyUF2 and reset USB to default state. |
+| `esp_tinyuf2_current_state` | Query `TINYUF2_STATE_NOT_INSTALLED`, `_INSTALLED`, or `_MOUNTED`. |
+| `esp_restart_from_tinyuf2` | Restart and signal that the boot came from a UF2 update. |
+
+### Usage pattern
+
+<Steps>
+  <Step title="Add the dependency">
+    ```bash
+    idf.py add-dependency "espressif/esp_tinyuf2"
+    ```
+  </Step>
+  <Step title="Install TinyUF2 at startup">
+    ```c
+    #include "esp_tinyuf2.h"
+
+    void app_main(void)
+    {
+        tinyuf2_ota_config_t ota_cfg = DEFAULT_TINYUF2_OTA_CONFIG();
+        /* restart automatically after the UF2 is flashed */
+        ota_cfg.if_restart = true;
+
+        tinyuf2_nvs_config_t nvs_cfg = DEFAULT_TINYUF2_NVS_CONFIG();
+
+        ESP_ERROR_CHECK(esp_tinyuf2_install(&ota_cfg, &nvs_cfg));
+    }
+    ```
+  </Step>
+  <Step title="Flash firmware">
+    Connect the device over USB. A drive named `ESP32S3` (or similar) appears on the host. Drag a `.uf2` file onto the drive. The device flashes the binary and restarts into the new firmware.
+  </Step>
+</Steps>
+
+<Warning>
+`esp_tinyuf2_uninstall` does not release memory because TinyUSB does not support full teardown. Call it only when you intend to keep the device running without USB mass storage for the remainder of the session.
+</Warning>

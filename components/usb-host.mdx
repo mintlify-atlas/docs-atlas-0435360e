@@ -1,0 +1,253 @@
+---
+title: "USB Host components"
+description: "Reference for ESP-IoT-Solution USB host components: CDC, UVC/UAC streaming, MSC OTA, and network adapters."
+---
+
+ESP-IoT-Solution provides a set of USB host components built on top of the ESP-IDF USB Host stack. Each component targets a specific USB class and can be used independently.
+
+<CardGroup cols={2}>
+  <Card title="USB CDC Host" icon="plug" href="#usb-cdc-host">
+    Communicate with CDC-ACM and vendor-specific CDC devices.
+  </Card>
+  <Card title="USB Stream" icon="video" href="#usb-stream">
+    Stream UVC video and UAC audio from USB cameras and headsets.
+  </Card>
+  <Card title="USB MSC OTA" icon="hard-drive" href="#usb-msc-ota">
+    Flash firmware from a USB flash drive without a network connection.
+  </Card>
+  <Card title="Network adapters" icon="network" href="#network-adapters">
+    RNDIS, ECM, and PPP modem support for USB-based internet access.
+  </Card>
+</CardGroup>
+
+---
+
+## USB CDC Host
+
+**Component:** `iot_usbh_cdc`  
+**Install:** `idf.py add-dependency "espressif/iot_usbh_cdc"`
+
+The `iot_usbh_cdc` component provides a simplified USB host CDC driver with hot-plug support and optional internal ring buffers for TX/RX.
+
+### Key API
+
+| Function | Description |
+|---|---|
+| `usbh_cdc_driver_install` | Install the CDC host driver and optionally init the USB Host stack. |
+| `usbh_cdc_driver_uninstall` | Uninstall the driver and free all resources. |
+| `usbh_cdc_register_dev_event_cb` | Register a callback for device connect/disconnect events. |
+| `usbh_cdc_port_open` | Open a CDC port on a connected device. |
+| `usbh_cdc_port_close` | Close a CDC port and release its resources. |
+| `usbh_cdc_write_bytes` | Write data to a CDC port (ring buffer or direct). |
+| `usbh_cdc_read_bytes` | Read data from a CDC port's receive buffer. |
+| `usbh_cdc_get_rx_buffer_size` | Query how many bytes are waiting in the RX buffer. |
+| `usbh_cdc_flush_rx_buffer` | Discard all data in the receive ring buffer. |
+| `usbh_cdc_send_custom_request` | Send a raw control transfer to the device. |
+
+<Note>
+Do not call `usbh_cdc_write_bytes` or `usbh_cdc_read_bytes` from within the `usbh_cdc_device_event_callback_t` callback. That callback runs in the USB task context and blocking there causes a deadlock. Send an event to your application task instead.
+</Note>
+
+### CDC usage example
+
+<Steps>
+  <Step title="Install the driver">
+    ```c
+    usbh_cdc_driver_config_t drv_cfg = {
+        .task_stack_size = 4096,
+        .task_priority   = 5,
+        .task_coreid     = 0,
+        .skip_init_usb_host_driver = false,
+    };
+    ESP_ERROR_CHECK(usbh_cdc_driver_install(&drv_cfg));
+    ```
+  </Step>
+  <Step title="Register a device event callback">
+    ```c
+    static usbh_cdc_port_handle_t s_cdc_port = NULL;
+
+    static void device_event_cb(usbh_cdc_device_event_t event,
+                                usbh_cdc_device_event_data_t *event_data,
+                                void *user_ctx)
+    {
+        if (event == CDC_HOST_DEVICE_EVENT_CONNECTED) {
+            usbh_cdc_port_config_t port_cfg = {
+                .dev_addr              = event_data->new_dev.dev_addr,
+                .itf_num               = 0,
+                .in_transfer_buffer_size  = 512,
+                .out_transfer_buffer_size = 512,
+                /* enable ring buffers for asynchronous read/write */
+                .in_ringbuf_size       = 1024,
+                .out_ringbuf_size      = 1024,
+            };
+            usbh_cdc_port_open(&port_cfg, &s_cdc_port);
+        }
+    }
+
+    static const usb_device_match_id_t match_list[] = {
+        {
+            .match_flags = USB_DEVICE_ID_MATCH_VENDOR | USB_DEVICE_ID_MATCH_PRODUCT,
+            .idVendor    = USB_DEVICE_VENDOR_ANY,
+            .idProduct   = USB_DEVICE_PRODUCT_ANY,
+        },
+        { 0 } /* null-terminate the list */
+    };
+    usbh_cdc_register_dev_event_cb(match_list, device_event_cb, NULL);
+    ```
+  </Step>
+  <Step title="Read and write data">
+    ```c
+    /* Write from application task */
+    const uint8_t cmd[] = "AT\r\n";
+    usbh_cdc_write_bytes(s_cdc_port, cmd, sizeof(cmd) - 1, pdMS_TO_TICKS(100));
+
+    /* Poll and read response */
+    size_t rx_len = 0;
+    usbh_cdc_get_rx_buffer_size(s_cdc_port, &rx_len);
+    if (rx_len > 0) {
+        uint8_t buf[128];
+        usbh_cdc_read_bytes(s_cdc_port, buf, &rx_len, pdMS_TO_TICKS(100));
+    }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## USB Stream
+
+**Component:** `usb_stream`  
+**Install:** `idf.py add-dependency "espressif/usb_stream"`
+
+`usb_stream` provides simultaneous UVC (video) and UAC (audio) streaming from a single USB device. The driver creates internal tasks; frames and mic data are delivered via callbacks.
+
+### Key API
+
+| Function | Description |
+|---|---|
+| `uvc_streaming_config` | Configure UVC stream (resolution, frame interval, buffers, callback). |
+| `uac_streaming_config` | Configure UAC stream (sample rate, bit depth, channels, buffers). |
+| `usb_streaming_start` | Start all configured streams. |
+| `usb_streaming_stop` | Stop streaming and free driver resources. |
+| `usb_streaming_connect_wait` | Block until a USB device connects (with timeout). |
+| `usb_streaming_control` | Suspend, resume, mute, or adjust volume on a stream. |
+| `uac_spk_streaming_write` | Write PCM audio data to the speaker output buffer. |
+| `uac_mic_streaming_read` | Read PCM audio data from the microphone input buffer. |
+| `uvc_frame_size_list_get` | List all frame sizes supported by the connected camera. |
+| `uvc_frame_size_reset` | Change resolution/frame-rate while streaming is suspended. |
+| `uac_frame_size_reset` | Change audio format while streaming is suspended. |
+
+<Tip>
+Use `FLAG_UVC_SUSPEND_AFTER_START`, `FLAG_UAC_SPK_SUSPEND_AFTER_START`, or `FLAG_UAC_MIC_SUSPEND_AFTER_START` in the config `flags` field to start a stream in the suspended state and resume it programmatically.
+</Tip>
+
+### UVC + UAC configuration example
+
+```c
+/* UVC: 320x240 MJPEG at ~15 fps */
+static uint8_t xfer_buf_a[32 * 1024];
+static uint8_t xfer_buf_b[32 * 1024];
+static uint8_t frame_buf[32 * 1024];
+
+void on_frame(uvc_frame_t *frame, void *arg)
+{
+    /* process MJPEG frame data */
+}
+
+uvc_config_t uvc_cfg = {
+    .frame_width      = 320,
+    .frame_height     = 240,
+    .frame_interval   = FPS2INTERVAL(15),
+    .xfer_buffer_size = sizeof(xfer_buf_a),
+    .xfer_buffer_a    = xfer_buf_a,
+    .xfer_buffer_b    = xfer_buf_b,
+    .frame_buffer_size = sizeof(frame_buf),
+    .frame_buffer     = frame_buf,
+    .frame_cb         = on_frame,
+};
+ESP_ERROR_CHECK(uvc_streaming_config(&uvc_cfg));
+
+/* UAC: 48 kHz, 16-bit, 1-channel microphone */
+void on_mic(mic_frame_t *frame, void *arg)
+{
+    /* process PCM samples in frame->data (frame->data_bytes bytes) */
+}
+
+uac_config_t uac_cfg = {
+    .mic_ch_num            = 1,
+    .mic_bit_resolution    = 16,
+    .mic_samples_frequence = 48000,
+    .mic_buf_size          = 4096,
+    .mic_cb                = on_mic,
+    .spk_ch_num            = 1,
+    .spk_bit_resolution    = 16,
+    .spk_samples_frequence = 48000,
+    .spk_buf_size          = 4096,
+};
+ESP_ERROR_CHECK(uac_streaming_config(&uac_cfg));
+
+ESP_ERROR_CHECK(usb_streaming_start());
+ESP_ERROR_CHECK(usb_streaming_connect_wait(5000));
+```
+
+---
+
+## USB MSC OTA
+
+**Component:** `esp_msc_ota`  
+**Install:** `idf.py add-dependency "espressif/esp_msc_ota"`
+
+`esp_msc_ota` reads a firmware binary from a FAT-formatted USB flash drive and writes it to the OTA partition. A one-shot helper (`esp_msc_ota`) handles the full flow automatically.
+
+<Warning>
+The OTA binary filename defaults to a maximum of 11 bytes due to FAT short-name limits (e.g. `/usb/ota.bin`). Configure `ota_bin_path` accordingly.
+</Warning>
+
+### Key API
+
+| Function | Description |
+|---|---|
+| `esp_msc_ota` | All-in-one: wait for drive, flash firmware, return. Call `esp_restart()` after. |
+| `esp_msc_ota_begin` | Initialize an OTA handle and open the binary file. |
+| `esp_msc_ota_perform` | Read one chunk and write it to flash. Call in a loop until complete. |
+| `esp_msc_ota_is_complete_data_received` | Returns `true` when all bytes have been written. |
+| `esp_msc_ota_end` | Finalize the OTA partition. Call `esp_restart()` after. |
+| `esp_msc_ota_abort` | Abort an in-progress update and roll back. |
+| `esp_msc_ota_get_img_desc` | Read the `esp_app_desc_t` from the firmware header before flashing. |
+
+### Simple usage
+
+```c
+esp_msc_ota_config_t ota_cfg = {
+    .ota_bin_path      = "/usb/ota.bin",
+    .bulk_flash_erase  = false,
+    .wait_msc_connect  = pdMS_TO_TICKS(10000),
+    .buffer_size       = 4096,
+};
+
+esp_err_t ret = esp_msc_ota(&ota_cfg);
+if (ret == ESP_OK) {
+    esp_restart();
+}
+```
+
+---
+
+## Network adapters
+
+These components add USB-based network connectivity. All three register with the ESP-IDF `esp_netif` stack.
+
+<CardGroup cols={3}>
+  <Card title="USB RNDIS" icon="ethernet">
+    Windows/Linux RNDIS host adapter.  
+    `idf.py add-dependency "espressif/usb_rndis_host"`
+  </Card>
+  <Card title="USB ECM" icon="ethernet">
+    CDC-ECM Ethernet adapter (macOS, Linux).  
+    `idf.py add-dependency "espressif/usb_ecm_host"`
+  </Card>
+  <Card title="USB PPP Modem" icon="signal">
+    PPP over CDC-ACM for 4G/LTE modems.  
+    `idf.py add-dependency "espressif/iot_usbh_modem"`
+  </Card>
+</CardGroup>

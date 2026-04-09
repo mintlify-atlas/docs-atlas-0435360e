@@ -1,0 +1,155 @@
+---
+title: "LED Indicator"
+description: "Drive GPIO, LEDC, RGB, and WS2812 LEDs with priority-based blink patterns using the led_indicator component."
+---
+
+The `led_indicator` component lets you define named blink patterns and assign priorities to them. Multiple patterns can be active simultaneously — higher-priority patterns interrupt lower-priority ones, which resume automatically when the high-priority pattern stops. All control calls return immediately; timing is handled internally by a FreeRTOS timer.
+
+## Supported driver types
+
+| Driver | On/Off | Brightness | Breathing | Color | Color gradient | Per-LED index |
+|--------|:------:|:----------:|:---------:|:-----:|:--------------:|:-------------:|
+| GPIO | ✓ | — | — | — | — | — |
+| LEDC (PWM, single channel) | ✓ | ✓ | ✓ | — | — | — |
+| RGB LED (PWM, 3 channels) | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| LED strip (WS2812 via RMT/SPI) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+## Adding the component
+
+```bash
+idf.py add-dependency "espressif/led_indicator"
+```
+
+## Defining blink patterns
+
+A pattern is an array of `blink_step_t` entries terminated by `LED_BLINK_STOP` or `LED_BLINK_LOOP`.
+
+<CodeGroup>
+
+```c loop pattern
+/* Blink: on 50 ms, off 100 ms, repeat */
+const blink_step_t blink_loop[] = {
+    {LED_BLINK_HOLD,   LED_STATE_ON,  50},
+    {LED_BLINK_HOLD,   LED_STATE_OFF, 100},
+    {LED_BLINK_LOOP,   0,             0},
+};
+```
+
+```c one-shot pattern
+/* Blink once then stop */
+const blink_step_t blink_once[] = {
+    {LED_BLINK_HOLD,   LED_STATE_ON,  50},
+    {LED_BLINK_HOLD,   LED_STATE_OFF, 100},
+    {LED_BLINK_STOP,   0,             0},
+};
+```
+
+```c breathe pattern
+/* Fade in/out continuously */
+const blink_step_t blink_breathe[] = {
+    {LED_BLINK_HOLD,    LED_STATE_OFF, 0},
+    {LED_BLINK_BREATHE, LED_STATE_ON,  500},
+    {LED_BLINK_BREATHE, LED_STATE_OFF, 500},
+    {LED_BLINK_LOOP,    0,             0},
+};
+```
+
+</CodeGroup>
+
+Assign patterns to an enum — the order determines priority (lower value = higher priority):
+
+```c
+typedef enum {
+    BLINK_CONNECTING,   /* highest priority */
+    BLINK_IDLE_LOOP,
+    BLINK_MAX,          /* sentinel — must be last */
+} my_blink_type_t;
+
+blink_step_t const *my_blink_lists[] = {
+    [BLINK_CONNECTING] = blink_once,
+    [BLINK_IDLE_LOOP]  = blink_loop,
+    [BLINK_MAX]        = NULL,
+};
+```
+
+## Key API
+
+| Function | Description |
+|----------|-------------|
+| `led_indicator_new_gpio_device()` | Create an indicator backed by a GPIO |
+| `led_indicator_start(handle, type)` | Enqueue a blink pattern |
+| `led_indicator_stop(handle, type)` | Cancel a queued or running pattern |
+| `led_indicator_preempt_start(handle, type)` | Start a pattern immediately, bypassing the queue |
+| `led_indicator_preempt_stop(handle, type)` | Stop the currently preempting pattern |
+| `led_indicator_delete(handle)` | Release all resources |
+
+<Note>
+`led_indicator_handle_t` is thread-safe. Share it freely across tasks or retrieve it by GPIO number with `led_indicator_get_handle()`.
+</Note>
+
+## Working example
+
+```c
+#include "led_indicator.h"
+
+/* --- Blink pattern definitions --- */
+static const blink_step_t s_blink_once[] = {
+    {LED_BLINK_HOLD, LED_STATE_ON,  100},
+    {LED_BLINK_HOLD, LED_STATE_OFF, 100},
+    {LED_BLINK_STOP, 0,             0},
+};
+static const blink_step_t s_blink_loop[] = {
+    {LED_BLINK_HOLD, LED_STATE_ON,  500},
+    {LED_BLINK_HOLD, LED_STATE_OFF, 500},
+    {LED_BLINK_LOOP, 0,             0},
+};
+
+typedef enum { MY_BLINK_ONCE, MY_BLINK_LOOP, MY_BLINK_MAX } my_blink_t;
+
+static blink_step_t const *s_blink_lists[] = {
+    [MY_BLINK_ONCE] = s_blink_once,
+    [MY_BLINK_LOOP] = s_blink_loop,
+    [MY_BLINK_MAX]  = NULL,
+};
+
+void app_main(void)
+{
+    led_indicator_handle_t led = NULL;
+
+    led_indicator_gpio_config_t gpio_cfg = {
+        .gpio_num            = GPIO_NUM_2,
+        .is_active_level_high = true,
+    };
+    led_indicator_config_t cfg = {
+        .blink_lists    = s_blink_lists,
+        .blink_list_num = MY_BLINK_MAX,
+    };
+
+    ESP_ERROR_CHECK(led_indicator_new_gpio_device(&cfg, &gpio_cfg, &led));
+
+    /* Start the looping pattern */
+    led_indicator_start(led, MY_BLINK_LOOP);
+
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    /* Higher-priority single blink interrupts the loop, then loop resumes */
+    led_indicator_start(led, MY_BLINK_ONCE);
+
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    led_indicator_stop(led, MY_BLINK_LOOP);
+    led_indicator_delete(led);
+}
+```
+
+<Tip>
+For WS2812 strips, use `led_indicator_new_strips_device()` with an `led_indicator_strips_config_t` that points to your RMT channel configuration.
+</Tip>
+
+## Gamma correction
+
+Human vision is non-linear. The component ships with a default gamma of 2.3; override it with:
+
+```c
+led_indicator_new_gamma_table(2.3f);
+```

@@ -1,0 +1,171 @@
+---
+title: "Environmental sensors"
+description: "ESP-IoT-Solution drivers for humidity and temperature sensors, gas sensors, ambient light sensors, and pressure sensors, including supported chips and usage examples."
+---
+
+ESP-IoT-Solution provides hardware abstraction layer (HAL) drivers for a range of environmental sensors under `components/sensors/`. Each driver implements a common sensor interface so application code can call consistent APIs regardless of the underlying chip. Drivers can also be used through the `sensor_hub` component for a higher-level abstraction.
+
+## Humidity and temperature sensors
+
+These sensors measure ambient temperature, relative humidity, or both, making them suitable for smart home, agricultural, and industrial environmental monitoring.
+
+| Chip | Function | Interface | Vendor | HAL |
+|------|----------|-----------|--------|-----|
+| AHT20 | Temperature, Humidity | I2C | ASAIR | — |
+| HDC2010 | Temperature, Humidity | I2C | TI | — |
+| HTS221 | Temperature, Humidity | I2C | ST | Yes |
+| MVH3004D | Temperature, Humidity | I2C | — | — |
+| SHT3x | Temperature, Humidity | I2C | Sensirion | Yes |
+
+Chips marked **Yes** in the HAL column include a full hardware abstraction layer with read functions for temperature and humidity.
+
+### Adding a sensor component
+
+```bash
+# Example: add the SHT3x driver
+idf.py add-dependency "espressif/sht3x"
+```
+
+### Usage pattern
+
+Sensors with a HAL follow the same pattern: create an I2C bus, create a sensor device handle, and call the read functions.
+
+```c
+#include "hts221.h"
+#include "i2c_bus.h"
+
+// Initialize I2C bus
+i2c_config_t i2c_conf = {
+    .mode             = I2C_MODE_MASTER,
+    .sda_io_num       = GPIO_NUM_21,
+    .sda_pullup_en    = GPIO_PULLUP_ENABLE,
+    .scl_io_num       = GPIO_NUM_22,
+    .scl_pullup_en    = GPIO_PULLUP_ENABLE,
+    .master.clk_speed = 100000,
+};
+i2c_bus_handle_t i2c_bus = i2c_bus_create(I2C_NUM_0, &i2c_conf);
+
+// Create sensor handle
+hts221_handle_t sensor = hts221_create(i2c_bus, HTS221_I2C_ADDRESS);
+
+// Read data
+float temperature, humidity;
+hts221_get_temperature(sensor, &temperature);
+hts221_get_humidity(sensor, &humidity);
+
+ESP_LOGI(TAG, "Temperature: %.2f°C, Humidity: %.1f%%", temperature, humidity);
+```
+
+<Tip>
+All I2C-based sensors in ESP-IoT-Solution rely on the `i2c_bus` component for bus management. Create a single `i2c_bus_handle_t` and share it across multiple sensor instances on the same bus.
+</Tip>
+
+---
+
+## Gas sensors
+
+Gas sensors detect air quality and specific gas concentrations. The `bme690` driver in `components/sensors/gas/` supports the Bosch BME690 multi-sensor IC.
+
+| Chip | Function | Interface | Vendor | HAL |
+|------|----------|-----------|--------|-----|
+| BME690 | Air quality, pressure, temperature, humidity | I2C, SPI | Bosch | — |
+
+The BME690 integrates a metal oxide (MOX) gas sensor alongside pressure, temperature, and humidity measurement. It is well-suited for indoor air quality monitoring, HVAC control, and wearable devices.
+
+### Component directory
+
+`components/sensors/gas/bme690/`
+
+### Adding to your project
+
+```bash
+idf.py add-dependency "espressif/bme690"
+```
+
+---
+
+## Ambient light sensors
+
+Light sensors measure illuminance, color (RGBW), or UV radiation. All three components use the I2C interface and have hardware abstraction layers.
+
+| Chip | Function | Interface | Vendor | HAL |
+|------|----------|-----------|--------|-----|
+| BH1750 | Illuminance (lux) | I2C | ROHM | Yes |
+| VEML6040 | RGBW light | I2C | Vishay | Yes |
+| VEML6075 | UVA, UVB | I2C | Vishay | Yes |
+
+### Usage pattern
+
+```c
+#include "bh1750.h"
+#include "i2c_bus.h"
+
+i2c_bus_handle_t i2c_bus = i2c_bus_create(I2C_NUM_0, &i2c_conf);
+bh1750_handle_t sensor   = bh1750_create(i2c_bus, BH1750_I2C_ADDRESS_DEFAULT);
+
+// Set measurement mode: continuous high-resolution
+bh1750_set_measure_mode(sensor, BH1750_CONTINUE_1LX_RES);
+
+float lux;
+bh1750_get_light_intensity(sensor, &lux);
+ESP_LOGI(TAG, "Light intensity: %.1f lux", lux);
+```
+
+<AccordionGroup>
+  <Accordion title="BH1750 – illuminance measurement">
+    The BH1750 is a 16-bit ambient light sensor that directly outputs a lux value without requiring calibration. It offers three resolution modes (1 lx, 0.5 lx, 4 lx) and two measurement timing modes (continuous and one-time). The I2C address is configurable via the ADDR pin: 0x23 (ADDR low) or 0x5C (ADDR high).
+  </Accordion>
+  <Accordion title="VEML6040 – RGBW color sensor">
+    The VEML6040 measures red, green, blue, and white light channels independently on the same I2C bus. It is suitable for color temperature estimation and display ambient light adaptation. Integration time is configurable from 40 ms to 640 ms.
+  </Accordion>
+  <Accordion title="VEML6075 – UV index sensor">
+    The VEML6075 reports separate UVA and UVB irradiance values, which can be combined to calculate a UV index. It includes a visible-light compensation channel to reduce interference. Integration time is selectable from 50 ms to 800 ms.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Pressure sensors
+
+Pressure sensors measure absolute atmospheric pressure, which can also be used to estimate altitude. The `bme280` driver is located in `components/sensors/pressure/`.
+
+| Chip | Function | Interface | Vendor | HAL |
+|------|----------|-----------|--------|-----|
+| BME280 | Pressure, temperature, humidity | I2C, SPI | Bosch | — |
+
+The BME280 is a combined environmental sensor offering high-accuracy pressure measurement (±1 hPa absolute) alongside temperature and humidity. It is commonly used for altitude estimation, weather monitoring, and indoor navigation.
+
+### Component directory
+
+`components/sensors/pressure/bme280/`
+
+### Adding to your project
+
+```bash
+idf.py add-dependency "espressif/bme280"
+```
+
+### Usage pattern
+
+```c
+#include "bme280.h"
+#include "i2c_bus.h"
+
+i2c_bus_handle_t i2c_bus  = i2c_bus_create(I2C_NUM_0, &i2c_conf);
+bme280_handle_t  sensor   = bme280_create(i2c_bus, BME280_I2C_ADDRESS_LOW);
+
+// Configure oversampling and filter
+bme280_default_init(sensor);
+
+float temperature, pressure, humidity;
+bme280_read_temperature(sensor, &temperature);
+bme280_read_pressure(sensor, &pressure);
+bme280_read_humidity(sensor, &humidity);
+
+ESP_LOGI(TAG, "Temp: %.2f°C, Pressure: %.2f hPa, Humidity: %.1f%%",
+         temperature, pressure / 100.0f, humidity);
+```
+
+<Note>
+The BME280 I2C address is 0x76 when the SDO pin is pulled low and 0x77 when pulled high. The same chip also supports SPI mode by connecting CSB to a GPIO and toggling it before each transaction.
+</Note>

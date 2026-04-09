@@ -1,0 +1,253 @@
+---
+title: "Storage overview"
+description: "File systems, storage media, extended VFS, EEPROM, and compression options for ESP32 IoT applications."
+keywords: ["storage", "SPIFFS", "LittleFS", "FAT", "NVS", "SD card", "eMMC", "EEPROM", "VFS", "AT24C02"]
+---
+
+ESP-IoT-Solution provides storage components and guidance covering embedded file systems, removable and soldered storage media, a virtual file system (VFS) abstraction layer, byte-addressable EEPROM, and XZ decompression.
+
+## File system comparison
+
+| Feature | NVS | FAT | SPIFFS | LittleFS |
+|---------|-----|-----|--------|----------|
+| Storage type | Key-value pairs | Files + directories | Flat files | Files + directories |
+| Storage media | SPI NOR Flash | Flash, SD, USB | SPI NOR Flash | Flash, SD |
+| Max capacity | MB | GB | ≤ 128 MB | < 128 MB |
+| Directory support | ✗ | ✓ | ✗ | ✓ |
+| Wear levelling | ✓ | Optional | ✓ | ✓ |
+| Power-down protection | ✓ | ✗ | ✗ | ✓ |
+| Encryption | ✓ | ✓ | ✗ | ✓ |
+| Read/write efficiency | High | Medium | Medium | High |
+| RAM usage | Low | Medium | Low | Very low |
+
+<Note>
+  LittleFS is the recommended general-purpose file system for new designs, particularly when power-down protection and low RAM usage are priorities.
+</Note>
+
+---
+
+## NVS library
+
+NVS (Non-Volatile Storage) stores key-value pairs in a dedicated Flash partition. Keys are ASCII strings; values can be integers, strings, or binary BLOBs.
+
+**Main features:**
+- Atomic updates guarantee data consistency across power failures
+- AES-XTS encryption support
+- Built-in wear levelling
+- Partition size: recommended ≤ 128 KB
+
+**When to use NVS:**
+- Storing device configuration, credentials, and calibration data
+- Infrequent writes, small records
+
+**When not to use NVS:**
+- Large files or frequently written data — use FAT or LittleFS instead
+
+**Reference:** [NVS Library API](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/nvs_flash.html)
+
+---
+
+## FAT file system
+
+ESP-IDF uses the [FatFs](http://elm-chan.org/fsw/ff/00index_e.html) library with VFS integration. FAT is the most compatible format with host PCs and other embedded platforms.
+
+**Main features:**
+- Multi-level directory structure
+- Compatible with standard FAT format (readable on Windows, Linux, macOS)
+- Supports SPI Flash, SD/MMC cards, and USB flash drives
+- Flash encryption support
+
+**Limitations:**
+- No atomic power-down recovery — data may be corrupted if power is removed during a write
+- Wear levelling requires at least 8 sectors when enabled
+
+<CodeGroup>
+
+```c Mount FAT on SD card (SDIO mode)
+sdmmc_card_t *card;
+sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+
+esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+    .format_if_mount_failed = false,
+    .max_files = 5,
+    .allocation_unit_size = 16 * 1024,
+};
+
+ESP_ERROR_CHECK(esp_vfs_fat_sdmmc_mount("/sdcard", &host,
+                                         &slot_config, &mount_config, &card));
+```
+
+```c Mount FAT on internal Flash
+esp_vfs_fat_mount_config_t mount_config = {
+    .format_if_mount_failed = true,
+    .max_files = 4,
+    .allocation_unit_size = CONFIG_WL_SECTOR_SIZE,
+};
+wl_handle_t s_wl_handle;
+ESP_ERROR_CHECK(esp_vfs_fat_spiflash_mount_rw_wl("/spiflash", "storage",
+                                                   &mount_config, &s_wl_handle));
+```
+
+</CodeGroup>
+
+---
+
+## SPIFFS file system
+
+SPIFFS is a flat (no directories) file system for SPI NOR Flash. It is in maintenance mode—new projects should use LittleFS.
+
+**Main features:**
+- Designed for NOR Flash with low RAM footprint
+- Static wear levelling
+- POSIX-style API via VFS
+
+**Limitations:**
+- No directory support
+- Performance degrades significantly above 70% capacity utilization
+- No ongoing upstream maintenance
+
+**Reference:** [SPIFFS File System](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/spiffs.html)
+
+---
+
+## LittleFS file system
+
+LittleFS is a block-based file system designed for microcontrollers with strong power-down recovery, dynamic wear levelling, and support for directories.
+
+**Main features:**
+- Power-safe by design: every write is atomic
+- Dynamic wear levelling adapts to usage patterns
+- Fixed, very low RAM overhead regardless of partition size
+- Supports directories and subdirectories
+- Works on both SPI Flash and SD/MMC cards
+
+**Installation:**
+
+```bash
+idf.py add-dependency "joltwallet/littlefs"
+```
+
+```c
+esp_vfs_littlefs_conf_t conf = {
+    .base_path = "/littlefs",
+    .partition_label = "storage",
+    .format_if_mount_failed = true,
+    .dont_mount = false,
+};
+ESP_ERROR_CHECK(esp_vfs_littlefs_register(&conf));
+```
+
+**Reference:** [LittleFS Component](https://components.espressif.com/components/joltwallet/littlefs)
+
+---
+
+## Storage media
+
+### SPI Flash
+
+The primary storage medium on all ESP modules. Integrated alongside the application firmware.
+
+- Typical capacities: 4 MB, 8 MB, 16 MB
+- Modes: DOUT/DIO (dual), QOUT/QIO (quad)
+- Speeds: 40 MHz or 80 MHz
+
+Use `partition tables` to allocate regions for NVS, FAT, or other file systems independently of the application binary.
+
+### SD card
+
+<Tabs>
+  <Tab title="SDIO mode">
+    - Supported on chips with SDMMC host peripheral (ESP32, ESP32-S3)
+    - 1-line, 4-line, or 8-line; 20 MHz (default) or 40 MHz (high-speed)
+    - Uses fixed pins defined by the SDMMC host peripheral
+  </Tab>
+  <Tab title="SPI mode">
+    - Available on all ESP chips
+    - Arbitrary GPIO mapping via GPIO matrix
+    - Supports multiple SD cards using separate CS pins
+    - Lower throughput compared to SDIO
+  </Tab>
+</Tabs>
+
+<Note>
+  When using SPI mode or 1-bit SDIO, external pull-up resistors are required on several SD card signals. See [SD pull-up requirements](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/sd_pullup_requirements.html).
+</Note>
+
+### eMMC
+
+eMMC chips use the same `SD/SDIO/MMC Driver` as SD cards but are soldered directly to the board. eMMC supports only SDIO mode (not SPI mode), and is available on chips with an SDMMC host peripheral (ESP32, ESP32-S3).
+
+| Feature | SD card | eMMC |
+|---------|---------|------|
+| Form factor | Pluggable | Soldered |
+| Interface | SDIO or SPI | SDIO only |
+| 8-line mode | ✗ | ✓ |
+| Typical use | Removable media | Embedded wearables |
+
+### USB flash drive
+
+Available on chips with USB-OTG (ESP32-S2, ESP32-S3). Uses the FAT file system over the MSC (Mass Storage Class) host driver.
+
+**Component:** [usb_host_msc](https://components.espressif.com/components/espressif/usb_host_msc)
+
+---
+
+## EEPROM (AT24C01/02)
+
+EEPROM is byte-addressable non-volatile memory, suited for small amounts of configuration data that must survive power cycles without wearing Flash.
+
+**Supported chips:**
+
+| Chip | Capacity | Bus | Vendor |
+|------|----------|-----|--------|
+| AT24C01 | 1024 bits | I2C | Atmel/Microchip |
+| AT24C02 | 2048 bits | I2C | Atmel/Microchip |
+
+- I2C clock: 100–400 kHz
+- Byte-addressable read/write
+- Each `word` is 8 bits wide
+
+The `at24c02` driver component is available on the [ESP Component Registry](https://components.espressif.com/components/espressif/at24c02).
+
+---
+
+## Extended VFS
+
+The `extended_vfs` component registers additional virtual file system endpoints that map Linux-style device paths (`/dev/...`) to ESP32 peripheral drivers. This makes it possible to use standard POSIX `open()`/`read()`/`write()`/`ioctl()` calls on hardware peripherals like UART, GPIO, and SPI.
+
+**Installation:**
+
+```bash
+idf.py add-dependency "espressif/extended_vfs"
+```
+
+**Initialization:**
+
+```c
+#include "ext_vfs.h"
+
+void app_main(void)
+{
+    ext_vfs_init();
+    // After this, /dev/uart/0, /dev/gpio, etc. are accessible
+}
+```
+
+Once initialized, peripherals can be accessed using standard file operations:
+
+```c
+int fd = open("/dev/uart/0", O_RDWR);
+write(fd, "hello\n", 6);
+close(fd);
+```
+
+---
+
+## XZ decompression
+
+ESP-IoT-Solution includes support for decompressing XZ-compressed data on-device. This is useful for delivering firmware updates or large static assets in compressed form to minimize Flash usage and OTA transfer size.
+
+XZ uses the LZMA2 algorithm and supports integrity checking (CRC32, CRC64, SHA-256). The decompressor runs with a configurable memory footprint suitable for embedded use.
+
+Refer to the `components/storage/` directory for the EEPROM and XZ component source, and the ESP Component Registry for version-pinned releases.

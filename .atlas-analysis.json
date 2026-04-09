@@ -1,21 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "ESP-IoT-Solution",
+  "projectType": "sdk-library",
+  "projectName": "ESP-IoT-Solution",
+  "projectDescription": "A comprehensive collection of IoT device drivers, frameworks, and solutions built on top of ESP-IDF for Espressif ESP series chips.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#E7343A"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/espressif/esp-iot-solution"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/espressif/esp-iot-solution"
-    }
-  },
+  "primaryColor": "#E7343A",
+  "lightColor": null,
+  "darkColor": null,
   "navigation": {
     "tabs": [
       {
@@ -24,7 +14,7 @@
           {
             "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
               "hardware-overview"
             ]
@@ -118,5 +108,32 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "100+ ready-to-use IoT components for ESP32 chips",
+    "Device drivers for sensors, displays, audio, USB, and Bluetooth",
+    "Low power solutions with deep sleep and ULP coprocessor support",
+    "Motor control including FOC (Field-Oriented Control) and sensorless BLDC",
+    "LCD/display drivers for 20+ display panels and LVGL GUI integration",
+    "BLE profiles and services for standard IoT connectivity",
+    "USB host and device support (CDC, MSC, UAC, UVC, RNDIS)",
+    "AI integrations including OpenAI, MCP, and Xiaozhi voice assistant",
+    "OTA update support via BLE, USB MSC, and TinyUF2",
+    "Comprehensive sensor library including environmental, motion, and power sensors"
+  ],
+  "publicApiSurface": [
+    "iot_button_create() / iot_button_register_cb() — button driver API",
+    "i2c_bus_create() / i2c_bus_cmd_begin() — I2C bus abstraction",
+    "spi_bus_create() / spi_bus_transfer_bytes() — SPI bus abstraction",
+    "ble_conn_mgr_init() / ble_conn_mgr_deinit() — BLE connection manager",
+    "led_indicator_create() / led_indicator_start() — LED indicator control",
+    "lightbulb_driver_init() / lightbulb_set_rgb() — RGB lighting driver",
+    "sensor_hub API — unified sensor data collection and event dispatch",
+    "esp_lcd_* panel driver APIs — LCD panel initialization and drawing",
+    "usb_stream_install() — USB camera/audio streaming",
+    "esp_msc_ota_begin() — USB MSC OTA firmware update",
+    "servo_init() / servo_set_angle() — servo motor control",
+    "knob_create() / knob_register_event_cb() — rotary encoder/knob driver",
+    "zero_detection API — AC power zero-crossing detection"
+  ]
 }

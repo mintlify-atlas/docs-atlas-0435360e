@@ -1,80 +1,261 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Set up your environment, add a component, and run your first ESP-IoT-Solution example."
 ---
 
-## Get started in three steps
+## Prerequisites
 
-Get your documentation site running locally and make your first customization.
+Before you begin, you need a working ESP-IDF installation. ESP-IoT-Solution is built on top of ESP-IDF, so you must set up the IDF toolchain first.
 
-### Step 1: Set up your local environment
+<Note>
+  Follow the [ESP-IDF Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/index.html) to install and configure your development environment, then return here.
+</Note>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+### ESP-IDF version requirements
 
-### Step 2: Deploy your changes
+Different branches of ESP-IoT-Solution require different ESP-IDF versions:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+| ESP-IoT-Solution | Required ESP-IDF     | Support status             |
+| :---------------: | :------------------: | :------------------------- |
+| `master`          | >= v5.3              | Active — new feature development |
+| `release/v2.0`    | v4.4 – v5.3          | Maintenance only (bugfix until v5.3 EOL) |
+| `release/v1.1`    | v4.0.1               | Archived                   |
+| `release/v1.0`    | v3.2.2               | Archived                   |
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<Note>
+  The recommended ESP-IDF version also varies by chip. See the [Compatibility Between ESP-IDF Releases and Revisions of Espressif SoCs](https://github.com/espressif/esp-idf/blob/master/COMPATIBILITY.md) for details.
+</Note>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+---
 
-### Step 3: Go live
+## Getting components
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+There are two ways to use ESP-IoT-Solution components in your project.
+
+<Tabs>
+  <Tab title="ESP Component Registry (recommended)">
+    The [ESP Component Registry](https://components.espressif.com/) is the easiest way to add individual components to any existing ESP-IDF project. You do not need to clone the repository.
+
+    Run the following command from your project's root directory, replacing `espressif/button` with the component you need:
+
+    ```bash
+    idf.py add-dependency "espressif/button"
+    ```
+
+    The component manager downloads the component automatically during the CMake configuration step (`idf.py build`). The downloaded files are placed in the `managed_components/` directory of your project.
+
+    <Tip>
+      Browse all available components at [components.espressif.com](https://components.espressif.com/). Search for `espressif/` to filter components published by Espressif.
+    </Tip>
+  </Tab>
+  <Tab title="Git clone">
+    Clone the repository if you want to contribute to components or run the bundled examples directly from the repository tree.
+
+    <Tabs>
+      <Tab title="Linux / macOS">
+        ```bash
+        # Clone the master branch (requires ESP-IDF >= v5.3)
+        git clone --recursive https://github.com/espressif/esp-iot-solution
+
+        # Or clone the release/v2.0 branch (requires ESP-IDF >= v4.4, <= v5.3)
+        git clone -b release/v2.0 --recursive https://github.com/espressif/esp-iot-solution
+        ```
+
+        Some examples require the `IOT_SOLUTION_PATH` environment variable:
+
+        ```bash
+        export IOT_SOLUTION_PATH=~/esp/esp-iot-solution
+        ```
+      </Tab>
+      <Tab title="Windows">
+        ```bash
+        # Clone the master branch (requires ESP-IDF >= v5.3)
+        git clone --recursive https://github.com/espressif/esp-iot-solution
+
+        # Or clone the release/v2.0 branch
+        git clone -b release/v2.0 --recursive https://github.com/espressif/esp-iot-solution
+        ```
+
+        Some examples require the `IOT_SOLUTION_PATH` environment variable:
+
+        ```bash
+        set IOT_SOLUTION_PATH=C:\esp\esp-iot-solution
+        ```
+      </Tab>
+    </Tabs>
+  </Tab>
+</Tabs>
+
+---
+
+## Building and flashing an example
+
+The following steps use the `button_power_save` example, located at `examples/get-started/button_power_save/`. This example demonstrates the `button` component with light-sleep power saving enabled.
+
+<Steps>
+  <Step title="Clone the repository">
+    If you haven't already, clone ESP-IoT-Solution:
+
+    ```bash
+    git clone --recursive https://github.com/espressif/esp-iot-solution
+    ```
+  </Step>
+  <Step title="Enter the example directory">
+    ```bash
+    cd esp-iot-solution/examples/get-started/button_power_save
+    ```
+
+    <Note>
+      If you copy the example to a different directory, remove all `override_path` entries from `main/idf_component.yml` so the component manager fetches dependencies from the registry instead.
+    </Note>
+  </Step>
+  <Step title="Set the target chip">
+    Replace `esp32` with your chip, for example `esp32s3`, `esp32c3`, or `esp32h2`:
+
+    ```bash
+    idf.py set-target esp32
+    ```
+  </Step>
+  <Step title="(Optional) Configure the project">
+    Open the interactive configuration menu to adjust options such as CPU frequency or light-sleep mode:
+
+    ```bash
+    idf.py menuconfig
+    ```
+  </Step>
+  <Step title="Build, flash, and monitor">
+    <Tabs>
+      <Tab title="Linux / macOS">
+        ```bash
+        idf.py build
+        idf.py -p /dev/ttyUSB0 flash monitor
+        ```
+      </Tab>
+      <Tab title="Windows">
+        ```bash
+        idf.py build
+        idf.py -p COM3 flash monitor
+        ```
+      </Tab>
+    </Tabs>
+
+    Press `Ctrl-]` to exit the serial monitor.
+  </Step>
+</Steps>
+
+### Expected output
+
+After flashing, the monitor prints the IoT Button version and then logs each button event as you press the boot button (GPIO0 on most boards):
+
+```
+I (1159) button: IoT Button Version: 3.2.0
+I (1163) gpio: GPIO[0]| InputEn: 1| OutputEn: 0| OpenDrain: 0| Pullup: 1| Pulldown: 0| Intr:0
+I (2922) button_power_save: Button event BUTTON_PRESS_DOWN
+I (3017) button_power_save: Button event BUTTON_PRESS_UP
+I (3017) button_power_save: Wake up from light sleep, reason 4
+I (3200) button_power_save: Button event BUTTON_SINGLE_CLICK
+```
+
+---
+
+## Using the button component in your own project
+
+The example above uses the `espressif/button` component. Here is how to integrate it into a new project.
+
+### 1. Add the dependency
+
+Run this from your project root:
+
+```bash
+idf.py add-dependency "espressif/button"
+```
+
+### 2. Include the headers and create a button
+
+The `button` component exposes its API through `iot_button.h`. For GPIO-backed buttons, also include `button_gpio.h`.
+
+```c
+#include "iot_button.h"
+#include "button_gpio.h"
+
+/* GPIO0 is the BOOT button on most ESP32 development boards */
+#define BOOT_BUTTON_NUM     0
+#define BUTTON_ACTIVE_LEVEL 0   /* Active-low (pressed = 0) */
+
+static void button_event_cb(void *button_handle, void *usr_data)
+{
+    /* iot_button_print_event logs the event name over UART */
+    iot_button_print_event((button_handle_t)button_handle);
+}
+
+void button_init(void)
+{
+    button_config_t btn_cfg = {0};           /* Use default long/short press times */
+    button_gpio_config_t gpio_cfg = {
+        .gpio_num     = BOOT_BUTTON_NUM,
+        .active_level = BUTTON_ACTIVE_LEVEL,
+    };
+
+    button_handle_t btn;
+    ESP_ERROR_CHECK(iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &btn));
+
+    /* Register callbacks for the events you care about */
+    ESP_ERROR_CHECK(iot_button_register_cb(btn, BUTTON_SINGLE_CLICK, NULL,
+                                           button_event_cb, NULL));
+    ESP_ERROR_CHECK(iot_button_register_cb(btn, BUTTON_DOUBLE_CLICK, NULL,
+                                           button_event_cb, NULL));
+    ESP_ERROR_CHECK(iot_button_register_cb(btn, BUTTON_LONG_PRESS_START, NULL,
+                                           button_event_cb, NULL));
+}
+```
+
+### 3. Key API reference
+
+| Function | Description |
+| -------- | ----------- |
+| `iot_button_new_gpio_device(btn_cfg, gpio_cfg, &handle)` | Create a GPIO-backed button instance |
+| `iot_button_register_cb(handle, event, args, cb, usr_data)` | Register a callback for a specific button event |
+| `iot_button_unregister_cb(handle, event, args)` | Remove a registered callback |
+| `iot_button_get_event(handle)` | Query the current button event |
+| `iot_button_get_repeat(handle)` | Get the number of consecutive presses |
+| `iot_button_get_pressed_time(handle)` | Get press duration in milliseconds |
+| `iot_button_print_event(handle)` | Log the current event name via ESP-IDF logging |
+| `iot_button_delete(handle)` | Free all resources for a button instance |
+
+### Available button events
+
+```c
+BUTTON_PRESS_DOWN          /* Button pressed */
+BUTTON_PRESS_UP            /* Button released */
+BUTTON_PRESS_REPEAT        /* Multiple presses detected */
+BUTTON_PRESS_REPEAT_DONE   /* Repeat sequence complete */
+BUTTON_SINGLE_CLICK        /* Single click confirmed */
+BUTTON_DOUBLE_CLICK        /* Double click confirmed */
+BUTTON_MULTIPLE_CLICK      /* Configured number of clicks reached */
+BUTTON_LONG_PRESS_START    /* Long press threshold crossed */
+BUTTON_LONG_PRESS_HOLD     /* Long press still held */
+BUTTON_LONG_PRESS_UP       /* Released after long press */
+```
+
+<Warning>
+  Always call `iot_button_delete()` when you are done with a button handle to release memory and timer resources.
+</Warning>
+
+---
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Hardware overview" icon="microchip" href="/hardware-overview">
+    Learn about supported ESP32 chips, peripherals, and development boards.
+  </Card>
+  <Card title="Input devices" icon="hand-pointer" href="/input/buttons-and-knobs">
+    Full documentation for buttons, knobs, and touch input components.
+  </Card>
+  <Card title="Component registry" icon="cube" href="https://components.espressif.com/">
+    Browse all available ESP-IoT-Solution components.
+  </Card>
+  <Card title="All examples" icon="flask" href="https://github.com/espressif/esp-iot-solution/tree/master/examples">
+    Explore the full examples directory on GitHub.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

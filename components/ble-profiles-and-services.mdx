@@ -1,0 +1,279 @@
+---
+title: BLE profiles and services
+description: Reference for all ESP-IoT-Solution BLE standard profiles, Espressif profiles, GATT services, and the BTHome V2 advertising component.
+---
+
+ESP-IoT-Solution ships a library of ready-to-use BLE profiles and GATT services. Profiles are high-level behavior specifications (e.g., Heart Rate Profile); services are the underlying GATT service implementations that profiles build on.
+
+## BLE profiles
+
+<CardGroup cols={2}>
+  <Card title="Standard profiles" icon="list-check">
+    Bluetooth SIG–defined profiles from `ble_profiles/std/`.
+  </Card>
+  <Card title="Espressif profiles" icon="microchip">
+    Espressif-defined profiles from `ble_profiles/esp/`.
+  </Card>
+</CardGroup>
+
+### Standard profiles
+
+| Profile | Description | Component name |
+|---|---|---|
+| Alert Notification Profile | Alerts and notification categories | `espressif/ble_anp` |
+| Heart Rate Profile | Heart rate measurement and body sensor location | `espressif/ble_hrp` |
+| Health Thermometer Profile | Temperature measurement and type | `espressif/ble_htp` |
+| Object Transfer Profile | Object transfer client/server (OTP) | `espressif/ble_otp` |
+
+### Espressif profiles
+
+| Profile | Description | Component name |
+|---|---|---|
+| BLE OTA Profile | Over-the-air firmware update (Bluedroid/NimBLE) | `espressif/ble_ota` |
+| BLE OTA Raw Profile | OTA profile for `ble_conn_mgr` backend | `espressif/ble_ota_raw` |
+
+### Third-party profiles
+
+| Profile | Description | Component name |
+|---|---|---|
+| BLE MIDI Profile | MIDI over BLE (BLE-MIDI spec) | `espressif/ble_midi` |
+
+## BLE services
+
+All standard GATT services are bundled in a single component:
+
+```bash
+idf.py add-dependency "espressif/ble_services"
+```
+
+Individual services are enabled via Kconfig options in `menuconfig` after adding the component. The following services are included:
+
+| Service | Abbreviation | Header |
+|---|---|---|
+| Alert Notification Service | ANS | `esp_ans.h` |
+| Battery Service | BAS | `esp_bas.h` |
+| Body Composition Service | BCS | `esp_bcs.h` |
+| Current Time Service | CTS | `esp_cts.h` |
+| Device Information Service | DIS | `esp_dis.h` |
+| Heart Rate Service | HRS | `esp_hrs.h` |
+| Health Thermometer Service | HTS | `esp_hts.h` |
+| MIDI Service | MIDI | `esp_ble_midi_svc.h` |
+| OTA Service | OTA | `esp_ble_ota_svc.h` |
+| Object Transfer Service | OTS | `esp_ots.h` |
+| TX Power Service | TPS | `esp_tps.h` |
+| User Data Service | UDS | `esp_uds.h` |
+| Weight Scale Service | WSS | `esp_wss.h` |
+
+## Adding individual profiles
+
+Each profile component can be added independently with `idf.py add-dependency`:
+
+<CodeGroup>
+
+```bash Alert Notification Profile
+idf.py add-dependency "espressif/ble_anp"
+```
+
+```bash Heart Rate Profile
+idf.py add-dependency "espressif/ble_hrp"
+```
+
+```bash Health Thermometer Profile
+idf.py add-dependency "espressif/ble_htp"
+```
+
+```bash Object Transfer Profile
+idf.py add-dependency "espressif/ble_otp"
+```
+
+```bash BLE OTA Profile
+idf.py add-dependency "espressif/ble_ota"
+```
+
+```bash BLE OTA Raw Profile
+idf.py add-dependency "espressif/ble_ota_raw"
+```
+
+```bash BLE MIDI Profile
+idf.py add-dependency "espressif/ble_midi"
+```
+
+</CodeGroup>
+
+<Note>
+`ble_midi` depends on `ble_conn_mgr`. It will be pulled in automatically, but make sure your project configures `ble_conn_mgr` before calling any MIDI APIs.
+</Note>
+
+---
+
+## BTHome component
+
+The `bthome` component implements the **BTHome V2** protocol for broadcasting sensor and binary sensor data over BLE advertisements. It is compatible with [Home Assistant](https://www.home-assistant.io/) and other platforms that support BTHome.
+
+**Supported SoCs:** ESP32, ESP32-C2, ESP32-C3, ESP32-H2, ESP32-S3, ESP32-C6  
+**Requires:** ESP-IDF ≥ 5.0
+
+```bash
+idf.py add-dependency "espressif/bthome"
+```
+
+### Overview
+
+BTHome works by encoding sensor readings into a structured advertising payload. The receiver (e.g., Home Assistant) scans for these advertisements and automatically discovers the sensors. Encryption (AES-CCM) is optional.
+
+### API reference
+
+#### Lifecycle
+
+| Function | Signature | Description |
+|---|---|---|
+| `bthome_create` | `esp_err_t bthome_create(bthome_handle_t *handle)` | Allocate and initialize a BTHome instance. |
+| `bthome_delete` | `esp_err_t bthome_delete(bthome_handle_t handle)` | Free a BTHome instance. |
+| `bthome_register_callbacks` | `esp_err_t bthome_register_callbacks(bthome_handle_t handle, bthome_callbacks_t *callbacks)` | Register `store` and `load` functions for persistent state. |
+| `bthome_load_params` | `esp_err_t bthome_load_params(bthome_handle_t handle)` | Load previously stored parameters (e.g., encryption key, counter). |
+
+#### Encryption and addressing
+
+| Function | Signature | Description |
+|---|---|---|
+| `bthome_set_encrypt_key` | `esp_err_t bthome_set_encrypt_key(bthome_handle_t handle, const uint8_t *key)` | Set the 16-byte AES encryption key. |
+| `bthome_set_local_mac_addr` | `esp_err_t bthome_set_local_mac_addr(bthome_handle_t handle, uint8_t *mac)` | Set the local MAC address used in encryption. |
+| `bthome_set_peer_mac_addr` | `esp_err_t bthome_set_peer_mac_addr(bthome_handle_t handle, const uint8_t *mac)` | Set the peer MAC address used for decryption. |
+
+#### Building advertising payloads
+
+| Function | Signature | Description |
+|---|---|---|
+| `bthome_payload_add_sensor_data` | `uint8_t bthome_payload_add_sensor_data(uint8_t *buffer, uint8_t offset, bthome_sensor_id_t obj_id, uint8_t *data, uint8_t data_len)` | Append a sensor measurement to a payload buffer. Returns bytes written. |
+| `bthome_payload_adv_add_bin_sensor_data` | `uint8_t bthome_payload_adv_add_bin_sensor_data(uint8_t *buffer, uint8_t offset, bthome_bin_sensor_id_t obj_id, uint8_t data)` | Append a binary sensor value (0 or 1) to a payload buffer. |
+| `bthome_payload_adv_add_evt_data` | `uint8_t bthome_payload_adv_add_evt_data(uint8_t *buffer, uint8_t offset, bthome_event_id_t obj_id, uint8_t *evt, uint8_t evt_size)` | Append an event (button, dimmer) to a payload buffer. |
+| `bthome_make_adv_data` | `uint8_t bthome_make_adv_data(bthome_handle_t handle, uint8_t *buffer, uint8_t *name, uint8_t name_len, bthome_device_info_t info, uint8_t *payload, uint8_t payload_len)` | Assemble a complete BTHome advertisement packet. Returns total length. |
+
+#### Parsing received advertisements
+
+| Function | Signature | Description |
+|---|---|---|
+| `bthome_parse_adv_data` | `bthome_reports_t *bthome_parse_adv_data(bthome_handle_t handle, uint8_t *adv, uint8_t len)` | Parse raw advertising data. Returns a `bthome_reports_t` on success, NULL on failure. |
+| `bthome_free_reports` | `void bthome_free_reports(bthome_reports_t *reports)` | Free a `bthome_reports_t` returned by `bthome_parse_adv_data`. |
+
+### Sensor IDs
+
+Use `bthome_sensor_id_t` values with `bthome_payload_add_sensor_data`. Common IDs:
+
+| Constant | Value | Measurement |
+|---|---|---|
+| `BTHOME_SENSOR_ID_BATTERY` | `0x01` | Battery level (%) |
+| `BTHOME_SENSOR_ID_TEMPERATURE_PRECISE` | `0x02` | Temperature (0.01 °C resolution) |
+| `BTHOME_SENSOR_ID_HUMIDITY_PRECISE` | `0x03` | Humidity (0.01 % resolution) |
+| `BTHOME_SENSOR_ID_PRESSURE` | `0x04` | Pressure (0.01 hPa resolution) |
+| `BTHOME_SENSOR_ID_ILLUMINANCE` | `0x05` | Illuminance (lux) |
+| `BTHOME_SENSOR_ID_CO2` | `0x12` | CO₂ concentration (ppm) |
+| `BTHOME_SENSOR_ID_TEMPERATURE` | `0x45` | Temperature (0.1 °C resolution) |
+| `BTHOME_SENSOR_ID_VOLTAGE` | `0x0C` | Voltage (0.001 V resolution) |
+
+Binary sensor IDs (`bthome_bin_sensor_id_t`) include motion (`0x21`), door (`0x1A`), occupancy (`0x23`), and others. Event IDs (`bthome_event_id_t`) cover button (`0x3A`) and dimmer (`0x3C`).
+
+### Code example
+
+<Steps>
+  <Step title="Create a BTHome receiver instance">
+
+```c
+#include "bthome_v2.h"
+#include "esp_log.h"
+
+static const char *TAG = "bthome";
+
+// Storage callbacks (implement with NVS or similar)
+static void my_store(bthome_handle_t handle, const char *key,
+                     const uint8_t *data, uint8_t len) { /* ... */ }
+static void my_load(bthome_handle_t handle, const char *key,
+                    uint8_t *data, uint8_t len)          { /* ... */ }
+
+bthome_handle_t bthome;
+
+void bthome_init(void)
+{
+    ESP_ERROR_CHECK(bthome_create(&bthome));
+
+    bthome_callbacks_t cbs = {
+        .store = my_store,
+        .load  = my_load,
+    };
+    ESP_ERROR_CHECK(bthome_register_callbacks(bthome, &cbs));
+
+    // Optional: set 16-byte encryption key
+    static const uint8_t key[] = {
+        0x23, 0x1d, 0x39, 0xc1, 0xd7, 0xcc, 0x1a, 0xb1,
+        0xae, 0xe2, 0x24, 0xcd, 0x09, 0x6d, 0xb9, 0x32
+    };
+    ESP_ERROR_CHECK(bthome_set_encrypt_key(bthome, key));
+
+    // Set peer MAC to decrypt advertisements from a known device
+    static const uint8_t peer_mac[] = {0x54, 0x48, 0xE6, 0x8F, 0x80, 0xA5};
+    ESP_ERROR_CHECK(bthome_set_peer_mac_addr(bthome, peer_mac));
+}
+```
+
+  </Step>
+  <Step title="Build and send a sensor advertisement">
+
+```c
+#include "bthome_v2.h"
+
+void bthome_advertise_temperature(bthome_handle_t handle, int16_t temp_cdeg)
+{
+    uint8_t payload[32];
+    uint8_t offset = 0;
+
+    // Append temperature (0.01 °C resolution, little-endian int16)
+    uint8_t temp_bytes[2] = { (uint8_t)(temp_cdeg & 0xFF),
+                               (uint8_t)(temp_cdeg >> 8) };
+    offset += bthome_payload_add_sensor_data(payload, offset,
+                                             BTHOME_SENSOR_ID_TEMPERATURE_PRECISE,
+                                             temp_bytes, sizeof(temp_bytes));
+
+    // Assemble full advertisement packet
+    uint8_t adv_buf[64];
+    uint8_t name[] = "ESP_Sensor";
+    bthome_device_info_t info = { .all = 0 };  // no encryption, BTHome V2
+    info.bit.bthome_version = 2;
+
+    uint8_t adv_len = bthome_make_adv_data(handle, adv_buf, name,
+                                           sizeof(name) - 1,
+                                           info, payload, offset);
+
+    // Pass adv_buf / adv_len to esp_ble_conn_adv_data_set() or equivalent
+    (void)adv_len;
+}
+```
+
+  </Step>
+  <Step title="Parse a received advertisement">
+
+```c
+// Called from a scan result handler with raw adv data
+void bthome_process_scan_result(bthome_handle_t handle,
+                                const uint8_t *adv, uint8_t adv_len)
+{
+    bthome_reports_t *reports = bthome_parse_adv_data(handle,
+                                                      (uint8_t *)adv, adv_len);
+    if (reports == NULL) {
+        return;  // not a BTHome advertisement or decryption failed
+    }
+
+    for (int i = 0; i < reports->num_reports; i++) {
+        bthome_report_t *r = &reports->report[i];
+        ESP_LOGI(TAG, "Object ID=0x%02x  len=%d", r->id, r->len);
+    }
+
+    bthome_free_reports(reports);
+}
+```
+
+  </Step>
+</Steps>
+
+<Tip>
+To broadcast without encryption, leave `info.bit.encryption_flag` at 0 and skip `bthome_set_encrypt_key`. Home Assistant will still auto-discover the device.
+</Tip>

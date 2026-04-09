@@ -1,0 +1,242 @@
+---
+title: "LCD panel drivers"
+description: "Overview of LCD panel drivers in ESP-IoT-Solution, covering SPI, RGB, QSPI, I80, and MIPI-DSI interfaces, touch panel drivers, and general initialization patterns."
+---
+
+ESP-IoT-Solution provides a collection of LCD panel driver components that implement the `esp_lcd` panel interface from ESP-IDF. Each driver targets a specific controller IC and exposes the standard `esp_lcd_panel_handle_t` API, making it straightforward to swap display hardware without rewriting application code.
+
+## Supported interfaces
+
+LCD controllers use one of five interface types to transfer pixel data to the MCU. Choosing the right type affects GPIO count, data bandwidth, and whether the display needs its own graphics RAM (GRAM).
+
+| Interface | Parallel bits | GRAM location | Typical use |
+|-----------|--------------|---------------|-------------|
+| SPI | 1 | LCD | Low-resolution screens, minimal IO |
+| QSPI (Quad-SPI) | 4 | LCD or MCU | Mid-resolution with fewer GPIOs than I80 |
+| I80 (MCU / DBI) | 8 or 16 | LCD | Higher bandwidth, requires more GPIOs |
+| RGB (DPI) | 8 / 16 / 18 / 24 | MCU | High-resolution without LCD-side GRAM |
+| MIPI-DSI | 1–4 lanes | LCD or MCU | High-res, high-refresh-rate (requires ESP-IDF ≥ 5.3) |
+
+<Note>
+RGB LCDs typically also need a 3-wire SPI interface for sending initialization commands. The `esp_lcd_panel_io_additions` component provides a bit-bang implementation of this interface via GPIO or an IO expander.
+</Note>
+
+## Supported panel drivers
+
+The table below lists every driver component available under `components/display/lcd/`.
+
+| Controller | Component name | Interface(s) |
+|------------|----------------|--------------|
+| AXS15231B | `esp_lcd_axs15231b` | SPI, QSPI, I80, MIPI-DSI |
+| CO5300 | `esp_lcd_co5300` | SPI, QSPI, MIPI-DSI |
+| EK79007 | `esp_lcd_ek79007` | MIPI-DSI |
+| ER88577 | `esp_lcd_er88577` | MIPI-DSI |
+| GC9107 | `esp_lcd_gc9107` | SPI |
+| GC9B71 | `esp_lcd_gc9b71` | SPI, QSPI |
+| GC9D01 | `esp_lcd_gc9d01` | SPI |
+| HX8399 | `esp_lcd_hx8399` | MIPI-DSI |
+| JD9165 | `esp_lcd_jd9165` | MIPI-DSI |
+| JD9365 | `esp_lcd_jd9365` | MIPI-DSI |
+| NV3022B | `esp_lcd_nv3022b` | SPI |
+| NV3052 | `esp_lcd_nv3052` | RGB |
+| SH8601 | `esp_lcd_sh8601` | SPI, QSPI |
+| SPD2010 | `esp_lcd_spd2010` | SPI, QSPI |
+| ST7123 | `esp_lcd_st7123` | MIPI-DSI |
+| ST7701(S) | `esp_lcd_st7701` | 3-wire SPI + RGB, MIPI-DSI |
+| ST7703 | `esp_lcd_st7703` | MIPI-DSI |
+| ST77903 (QSPI) | `esp_lcd_st77903_qspi` | QSPI |
+| ST77903 (RGB) | `esp_lcd_st77903_rgb` | RGB |
+| ST77916 | `esp_lcd_st77916` | SPI, QSPI, MIPI-DSI |
+| ST77922 | `esp_lcd_st77922` | SPI, QSPI, RGB, MIPI-DSI |
+| USB display | `esp_lcd_usb_display` | USB UVC (ESP32-P4 only) |
+
+<Note>
+MIPI-DSI drivers require ESP-IDF v5.3 or later. The `esp_lcd_usb_display` component lets you route framebuffer output to a PC monitor over USB when no physical LCD is connected, which is useful during development.
+</Note>
+
+## Touch panel drivers
+
+Touch controllers supported in `components/display/lcd_touch/`:
+
+| Controller | Component name | Interface |
+|------------|----------------|-----------|
+| ILI2118 | `esp_lcd_touch_ili2118` | I2C |
+| SPD2010 | `esp_lcd_touch_spd2010` | I2C |
+| ST7123 | `esp_lcd_touch_st7123` | I2C |
+
+Touch drivers follow the `esp_lcd_touch` API from ESP-IDF and integrate directly with the `esp_lvgl_adapter` input registration.
+
+## Panel IO additions
+
+The `esp_lcd_panel_io_additions` component provides `esp_lcd_new_panel_io_3wire_spi()`, which implements a software bit-bang 3-wire SPI interface (no D/C line, no MISO) using GPIO or an IO expander. This is required for RGB LCD controllers that use a separate SPI interface for initialization commands.
+
+### Adding the component
+
+```bash
+idf.py add-dependency "espressif/esp_lcd_panel_io_additions"
+```
+
+Or declare it in `idf_component.yml`:
+
+```yaml
+dependencies:
+  espressif/esp_lcd_panel_io_additions: "*"
+```
+
+### Usage example
+
+```c
+spi_line_config_t spi_line = {
+    .cs_io_type  = IO_TYPE_GPIO,
+    .cs_gpio_num = GPIO_NUM_9,
+    .scl_io_type = IO_TYPE_GPIO,
+    .scl_gpio_num = GPIO_NUM_10,
+    .sda_io_type = IO_TYPE_GPIO,
+    .sda_gpio_num = GPIO_NUM_11,
+    .io_expander = NULL,
+};
+esp_lcd_panel_io_3wire_spi_config_t io_config = {
+    .line_config      = spi_line,
+    .expect_clk_speed = PANEL_IO_3WIRE_SPI_CLK_MAX,
+    .spi_mode         = 0,
+    .lcd_cmd_bytes    = 1,
+    .lcd_param_bytes  = 1,
+    .flags = {
+        .use_dc_bit          = 1,
+        .dc_zero_on_data     = 0,
+        .lsb_first           = 0,
+        .cs_high_active      = 0,
+        .del_keep_cs_inactive = 0,
+    },
+};
+esp_lcd_panel_io_handle_t panel_io = NULL;
+ESP_ERROR_CHECK(esp_lcd_new_panel_io_3wire_spi(&io_config, &panel_io));
+```
+
+## Adding a driver to your project
+
+Each component is published on the Espressif component registry. Use `idf.py add-dependency` with the component name from the table above.
+
+```bash
+# Example: add the GC9107 SPI driver
+idf.py add-dependency "espressif/esp_lcd_gc9107"
+```
+
+Alternatively, list the dependency in your project's `idf_component.yml`:
+
+```yaml
+dependencies:
+  espressif/esp_lcd_gc9107: "*"
+```
+
+## General initialization pattern
+
+All panel drivers follow the same three-step sequence: initialize the bus and panel IO, install the panel driver, then reset and initialize the panel.
+
+<Steps>
+  <Step title="Initialize the bus and panel IO">
+    Set up the hardware peripheral (SPI, I80, RGB, or MIPI-DSI bus) and create a panel IO handle.
+
+    ```c
+    // SPI bus example
+    const spi_bus_config_t bus_config =
+        GC9107_PANEL_BUS_SPI_CONFIG(PIN_PCLK, PIN_MOSI, H_RES * 80 * sizeof(uint16_t));
+    ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &bus_config, SPI_DMA_CH_AUTO));
+
+    esp_lcd_panel_io_handle_t io_handle = NULL;
+    const esp_lcd_panel_io_spi_config_t io_config =
+        GC9107_PANEL_IO_SPI_CONFIG(PIN_CS, PIN_DC, callback, &cb_ctx);
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
+        (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &io_handle));
+    ```
+  </Step>
+  <Step title="Install the panel driver">
+    Configure color depth, reset pin, and any vendor-specific options, then create the panel handle.
+
+    ```c
+    esp_lcd_panel_handle_t panel_handle = NULL;
+    const esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num  = PIN_RST,
+        .rgb_ele_order   = LCD_RGB_ELEMENT_ORDER_RGB,
+        .bits_per_pixel  = 16,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9107(io_handle, &panel_config, &panel_handle));
+    ```
+  </Step>
+  <Step title="Reset, initialize, and enable the display">
+    ```c
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+    ```
+  </Step>
+</Steps>
+
+### Custom initialization commands
+
+Drivers accept a `vendor_config` field where you can supply a custom command table. This lets you override the built-in initialization sequence without modifying the component source.
+
+```c
+static const gc9107_lcd_init_cmd_t lcd_init_cmds[] = {
+    // {cmd, {data...}, data_size, delay_ms}
+    {0xfe, (uint8_t[]){0x00}, 0, 0},
+    {0xef, (uint8_t[]){0x00}, 0, 0},
+    {0xeb, (uint8_t[]){0x14}, 1, 0},
+    // ... more commands
+};
+
+gc9107_vendor_config_t vendor_config = {
+    .init_cmds      = lcd_init_cmds,
+    .init_cmds_size = sizeof(lcd_init_cmds) / sizeof(gc9107_lcd_init_cmd_t),
+};
+
+const esp_lcd_panel_dev_config_t panel_config = {
+    .reset_gpio_num = PIN_RST,
+    .bits_per_pixel = 16,
+    .vendor_config  = &vendor_config,
+};
+```
+
+### MIPI-DSI initialization pattern
+
+MIPI-DSI panels require powering the D-PHY LDO before creating the bus.
+
+```c
+// Power on MIPI PHY
+esp_ldo_channel_config_t ldo_cfg = {
+    .chan_id    = 3,
+    .voltage_mv = 2500,
+};
+esp_ldo_channel_handle_t ldo_handle = NULL;
+ESP_ERROR_CHECK(esp_ldo_acquire_channel(&ldo_cfg, &ldo_handle));
+
+// Create MIPI DSI bus
+esp_lcd_dsi_bus_handle_t dsi_bus = NULL;
+esp_lcd_dsi_bus_config_t bus_cfg = HX8399_PANEL_BUS_DSI_2CH_CONFIG();
+ESP_ERROR_CHECK(esp_lcd_new_dsi_bus(&bus_cfg, &dsi_bus));
+
+// Create DBI (command) panel IO
+esp_lcd_panel_io_handle_t dbi_io = NULL;
+esp_lcd_dbi_io_config_t dbi_cfg = HX8399_PANEL_IO_DBI_CONFIG();
+ESP_ERROR_CHECK(esp_lcd_new_panel_io_dbi(dsi_bus, &dbi_cfg, &dbi_io));
+
+// Install panel driver
+esp_lcd_panel_handle_t panel_handle = NULL;
+const esp_lcd_dpi_panel_config_t dpi_cfg =
+    HX8399_1024_600_PANEL_30HZ_DPI_CONFIG(LCD_COLOR_PIXEL_FORMAT_RGB888);
+hx8399_vendor_config_t vendor_config = {
+    .flags.use_mipi_interface = 1,
+    .mipi_config = {
+        .dsi_bus    = dsi_bus,
+        .dpi_config = &dpi_cfg,
+    },
+};
+const esp_lcd_panel_dev_config_t panel_config = {
+    .reset_gpio_num = PIN_RST,
+    .bits_per_pixel = 24,
+    .vendor_config  = &vendor_config,
+};
+ESP_ERROR_CHECK(esp_lcd_new_panel_hx8399(dbi_io, &panel_config, &panel_handle));
+ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+```

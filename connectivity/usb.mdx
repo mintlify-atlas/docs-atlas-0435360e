@@ -1,0 +1,434 @@
+---
+title: USB Host and Device
+description: USB components for ESP-IoT-Solution covering host drivers (CDC, RNDIS, ECM, PPP, UVC/UAC, MSC OTA) and device drivers (UAC, UVC, TinyUF2 drag-and-drop OTA) on ESP32-S2, ESP32-S3, and ESP32-P4.
+keywords: [USB, CDC, RNDIS, ECM, PPP, UVC, UAC, MSC, OTA, TinyUF2, ESP32-S3, ESP32-P4]
+---
+
+ESP-IoT-Solution provides a full suite of USB host and device drivers built on top of the ESP-IDF USB Host stack and TinyUSB. The components support ESP32-S2, ESP32-S3, and ESP32-P4 chips that include a USB-OTG peripheral.
+
+## Chip USB peripheral support
+
+| Chip | USB OTG High-Speed | USB OTG Full-Speed | USB-Serial-JTAG |
+|---|---|---|---|
+| ESP32-P4 | Yes | Yes | Yes |
+| ESP32-S3 | No | Yes | Yes |
+| ESP32-S2 | No | Yes | No |
+| ESP32-C6 | No | No | Yes |
+| ESP32-C3 | No | No | Yes |
+
+<Note>
+USB host functionality (CDC, RNDIS, ECM, UVC, UAC, MSC) requires a USB-OTG Full-Speed or High-Speed peripheral. This is available on ESP32-S2, ESP32-S3, and ESP32-P4.
+</Note>
+
+---
+
+## USB host drivers
+
+<CardGroup cols={2}>
+  <Card title="USB CDC Host (iot_usbh_cdc)" icon="plug" href="#usb-cdc-host">
+    Simplified CDC host driver with hot-plug support and ring buffer.
+  </Card>
+  <Card title="USB Stream (UVC + UAC)" icon="video" href="#usb-stream-uvc-uac">
+    Composite UVC camera and UAC audio host driver for ESP32-S2/S3.
+  </Card>
+  <Card title="USB MSC OTA (esp_msc_ota)" icon="usb" href="#usb-msc-ota">
+    OTA firmware updates from a USB flash drive via MSC.
+  </Card>
+  <Card title="USB RNDIS Host" icon="network-wired" href="#usb-rndis-host">
+    RNDIS network adapter for 4G modules and USB-Ethernet dongles.
+  </Card>
+  <Card title="USB ECM Host" icon="ethernet" href="#usb-ecm-host">
+    ECM network adapter for 4G modules and USB-Ethernet dongles.
+  </Card>
+  <Card title="USB PPP Host (iot_usbh_modem)" icon="signal" href="#usb-ppp-host">
+    Full PPP dialing workflow for 4G Cat.1/Cat.4 modules.
+  </Card>
+</CardGroup>
+
+### USB CDC host
+
+The `iot_usbh_cdc` component implements a simplified USB host CDC driver. It supports hot-plug and an optional internal ring buffer to simplify sending and receiving data.
+
+<Steps>
+  <Step title="Install the CDC driver">
+    ```c
+    usbh_cdc_driver_config_t config = {
+        .task_stack_size = 1024 * 4,
+        .task_priority = 5,
+        .task_coreid = 0,
+        .skip_init_usb_host_driver = false,  // initialize USB Host stack internally
+    };
+    usbh_cdc_driver_install(&config);
+    ```
+
+    Set `skip_init_usb_host_driver = true` when sharing the USB Host stack with other drivers to avoid double-initialization.
+  </Step>
+  <Step title="Register a device event callback and match list">
+    ```c
+    static void device_event_cb(usbh_cdc_device_event_t event,
+                                usbh_cdc_device_event_data_t *event_data,
+                                void *user_ctx)
+    {
+        if (event == CDC_HOST_DEVICE_EVENT_CONNECTED) {
+            usbh_cdc_port_handle_t cdc_port = NULL;
+            usbh_cdc_port_config_t cdc_port_config = {
+                .dev_addr = event_data->new_dev.dev_addr,
+                .itf_num = 0,
+                .in_transfer_buffer_size = 512,
+                .out_transfer_buffer_size = 512,
+            };
+            usbh_cdc_port_open(&cdc_port_config, &cdc_port);
+        }
+    }
+
+    const static usb_device_match_id_t match_id_list[] = {
+        {
+            .match_flags = USB_DEVICE_ID_MATCH_VENDOR | USB_DEVICE_ID_MATCH_PRODUCT,
+            .idVendor = USB_DEVICE_VENDOR_ANY,
+            .idProduct = USB_DEVICE_PRODUCT_ANY,
+        },
+        { 0 }  // null-terminate the list
+    };
+    usbh_cdc_register_dev_event_cb(match_id_list, device_event_cb, NULL);
+    ```
+  </Step>
+  <Step title="Read and write data">
+    ```c
+    // Write data to the device
+    usbh_cdc_write_bytes(cdc_port, data, length, pdMS_TO_TICKS(100));
+
+    // Read buffered data
+    size_t rx_size = 0;
+    usbh_cdc_get_rx_buffer_size(cdc_port, &rx_size);
+    if (rx_size > 0) {
+        usbh_cdc_read_bytes(cdc_port, buffer, &rx_size, pdMS_TO_TICKS(100));
+    }
+    ```
+  </Step>
+  <Step title="Close and uninstall">
+    ```c
+    usbh_cdc_port_close(cdc_port);
+    usbh_cdc_driver_uninstall();
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Do not call `usbh_cdc_write_bytes` or `usbh_cdc_read_bytes` from inside the `device_event_cb` callback. This callback runs in the USB task context and calling communication functions from it will cause a deadlock.
+</Warning>
+
+**Example:** `usb/host/usb_cdc_basic`
+
+---
+
+### USB Stream (UVC + UAC)
+
+`usb_stream` is a combined UVC (camera) and UAC (audio) host driver for ESP32-S2 and ESP32-S3. It can drive one UVC stream and one UAC stream (microphone + speaker) simultaneously from a composite USB device.
+
+**Supported transfer modes:** Isochronous and Bulk (UVC); Isochronous (UAC)  
+**Camera requirements:** USB 1.1 Full-Speed, MJPEG output  
+**Audio requirements:** UAC 1.0
+
+```c
+uvc_config_t uvc_config = {
+    .frame_width = 320,
+    .frame_height = 240,
+    .frame_interval = FPS2INTERVAL(15),   // 15 fps
+    .xfer_buffer_size = 32 * 1024,
+    .xfer_buffer_a = xfer_buf_a,
+    .xfer_buffer_b = xfer_buf_b,
+    .frame_buffer_size = 32 * 1024,
+    .frame_buffer = frame_buf,
+    .frame_cb = camera_frame_cb,
+    .frame_cb_arg = NULL,
+};
+
+uac_config_t uac_config = {
+    .mic_bit_resolution = 16,
+    .mic_samples_frequence = 16000,
+    .spk_bit_resolution = 16,
+    .spk_samples_frequence = 16000,
+    .spk_buf_size = 16000,
+    .mic_cb = mic_frame_cb,
+};
+
+uvc_streaming_config(&uvc_config);
+uac_streaming_config(&uac_config);
+usb_streaming_start();
+```
+
+To send audio to the speaker:
+
+```c
+uac_spk_streaming_write(audio_data, audio_len, pdMS_TO_TICKS(100));
+```
+
+To stop the stream:
+
+```c
+usb_streaming_stop();
+```
+
+**Key API functions:** `uvc_streaming_config()`, `uac_streaming_config()`, `usb_streaming_start()`, `usb_streaming_stop()`, `usb_streaming_control()`, `uac_mic_streaming_read()`, `uac_spk_streaming_write()`
+
+**Examples:**
+- `usb/host/usb_camera_mic_spk`
+- `usb/host/usb_camera_lcd_display`
+- `usb/host/usb_audio_player`
+
+<Note>
+For ESP32-P4 high-speed camera support (up to 1080×1920 @ 60 fps with MJPEG, YUY2, H264, H265), use the `usb_host_uvc` component instead of `usb_stream`.
+</Note>
+
+---
+
+### USB MSC OTA
+
+`esp_msc_ota` enables OTA firmware updates by reading a binary from a USB flash drive (BOT protocol, Transparent SCSI command set). The device must have an OTA partition table.
+
+<Steps>
+  <Step title="Install the MSC host driver">
+    ```c
+    esp_msc_host_config_t msc_host_config = {
+        .base_path = "/usb",
+        .host_driver_config = DEFAULT_MSC_HOST_DRIVER_CONFIG(),
+        .vfs_fat_mount_config = DEFAULT_ESP_VFS_FAT_MOUNT_CONFIG(),
+        .host_config = DEFAULT_USB_HOST_CONFIG(),
+    };
+    esp_msc_host_handle_t host_handle = NULL;
+    esp_msc_host_install(&msc_host_config, &host_handle);
+    ```
+  </Step>
+  <Step title="Register OTA event handler (optional)">
+    ```c
+    esp_event_loop_create_default();
+    esp_event_handler_register(ESP_MSC_OTA_EVENT, ESP_EVENT_ANY_ID,
+                               &event_handler, NULL);
+    ```
+  </Step>
+  <Step title="Run OTA">
+    ```c
+    esp_msc_ota_config_t config = {
+        .ota_bin_path = "/usb/ota_test.bin",
+        .wait_msc_connect = pdMS_TO_TICKS(5000),
+    };
+    esp_msc_ota(&config);
+    ```
+  </Step>
+</Steps>
+
+**Supported hardware:** ESP32-S2, ESP32-S3, ESP32-P4 with a USB port capable of sourcing power.
+
+---
+
+### USB RNDIS host
+
+`iot_usbh_rndis` is a host driver for the RNDIS (Remote NDIS) protocol. RNDIS encapsulates TCP/IP in USB packets, allowing 4G modules and USB-Ethernet adapters to provide network connectivity.
+
+The driver sends `REMOTE_NDIS_INITIALIZE_MSG` on the control endpoint, queries OIDs (MAC address, link speed, link status) via `REMOTE_NDIS_QUERY_MSG`, then initiates DHCP to obtain an IP address.
+
+**Tested modules (RNDIS mode):** ML307R, ML302, AIR720 SL, EC800E-CN, EC801E-CN, YM310, MC610-EU, Lierda NT26
+
+**Throughput (ESP32-S3 + 4G dongle + SoftAP):**
+
+| Direction | Throughput |
+|---|---|
+| Uplink | 5.8 Mbps |
+| Downlink | 7.9 Mbps |
+
+**Example:** `usb/host/usb_rndis_4g_module`
+
+---
+
+### USB ECM host
+
+`iot_usbh_ecm` is a host driver for the ECM (Ethernet Control Model) protocol. ECM uses the CDC class interface to exchange Ethernet frames between the USB device and the host.
+
+The driver automatically scans interface descriptors of newly attached devices, finds the ECM interface (`bInterfaceClass = 0x02`, `bInterfaceSubClass = 0x06`), and parses the ECM functional descriptor to obtain the MAC address and maximum segment size.
+
+**Tested USB-Ethernet adapters:** CH397A, RTL8152B, NX7202D  
+**Tested 4G modules (ECM mode):** ML302, EC800E-CN, EC801E-CN, YM310, MC610-EU, Lierda NT26
+
+<Note>
+Some 4G modules expose ECM endpoints with an MPS exceeding the 64-byte Full-Speed limit. These modules print `EP MPS (512) exceeds supported limit (408)` and require RNDIS mode or a different module.
+</Note>
+
+**Example:** `usb/host/usb_ecm_4g_module`
+
+---
+
+### USB PPP host
+
+`iot_usbh_modem` implements the complete PPP dialing workflow on the USB host side. It connects 4G Cat.1 and Cat.4 modules via USB CDC (or vendor-specific) interfaces and establishes a PPP link for internet access.
+
+**Features:**
+- Fast startup with hot-plug support
+- Modem + AT command dual-interface support (where the module provides a separate AT port)
+- Standard PPP protocol (supported by most 4G modules)
+- NAPT network address translation
+
+**Supported modules:** ML302, Air780E, EC600N-CN, EC20, YM310, A7600C1, A7670E, SIM7080G, LE270-CN, MC610-EU
+
+To add a new module, identify the USB `Vendor ID`, `Product ID`, Modem interface number, and optional AT command interface number using a USB descriptor tool, then populate `usbh_modem_config_t`.
+
+**Example:** `usb/host/usb_cdc_4g_module`
+
+---
+
+## USB device drivers
+
+<CardGroup cols={2}>
+  <Card title="USB Device UAC (esp_device_uac)" icon="microphone" href="#usb-device-uac">
+    Implement an ESP chip as a UAC 2.0 audio device (microphone and speaker).
+  </Card>
+  <Card title="USB Device UVC (usb_device_uvc)" icon="camera" href="#usb-device-uvc">
+    Implement an ESP chip as a UVC camera streaming JPEG frames to a USB host.
+  </Card>
+  <Card title="TinyUF2 (esp_tinyuf2)" icon="floppy-disk" href="#tinyuf2-drag-and-drop-ota">
+    Drag-and-drop OTA via a virtual USB flash drive using the UF2 format.
+  </Card>
+</CardGroup>
+
+### USB device UAC
+
+`esp_device_uac` is a UAC 2.0 device driver based on TinyUSB. It allows an ESP chip to appear as a USB audio device with configurable sampling rates, microphone channels, and speaker channels.
+
+**Supported chips:** ESP32-S2, ESP32-S3, ESP32-P4
+
+```c
+uac_device_config_t config = {
+    .output_cb = uac_device_output_cb,    // speaker data from host → codec
+    .input_cb = uac_device_input_cb,      // mic data from codec → host
+    .set_mute_cb = uac_device_set_mute_cb,
+    .set_volume_cb = uac_device_set_volume_cb,
+    .cb_ctx = NULL,
+};
+uac_device_init(&config);
+```
+
+The microphone input callback (`uac_input_cb_t`) runs on a timeline; set `CONFIG_UAC_MIC_INTERVAL_MS` to control the read interval. For example, `CONFIG_UAC_MIC_INTERVAL_MS=10` with 48000 Hz / 16-bit / mono = 960 bytes per callback.
+
+<Note>
+Enabling `UAC_SUPPORT_MACOS` improves macOS compatibility but may prevent recognition by Windows.
+</Note>
+
+**Example:** `usb/device/usb_uac`
+
+---
+
+### USB device UVC
+
+`usb_device_uvc` lets an ESP chip act as a UVC camera, streaming JPEG frames to a USB host. The driver is based on TinyUSB and supports both isochronous and bulk transfer modes.
+
+**Supported chips:** ESP32-S2, ESP32-S3, ESP32-P4
+
+```c
+uvc_device_config_t config = {
+    .uvc_buffer = uvc_buffer,
+    .uvc_buffer_size = 40 * 1024,
+    .start_cb = camera_start_cb,    // initialize camera with negotiated format
+    .fb_get_cb = camera_fb_get_cb,  // return next frame buffer
+    .fb_return_cb = camera_fb_return_cb,  // recycle frame buffer after transfer
+    .stop_cb = camera_stop_cb,
+    .cb_ctx = NULL,
+};
+
+ESP_ERROR_CHECK(uvc_device_config(0, &config));
+ESP_ERROR_CHECK(uvc_device_init());
+```
+
+The `camera_start_cb` receives the negotiated `uvc_format_t`, width, height, and frame rate. The `camera_fb_get_cb` must return a populated `uvc_fb_t` frame buffer.
+
+**Examples:**
+- `usb/device/usb_webcam`
+- `usb/device/usb_dual_uvc_device`
+
+---
+
+### TinyUF2 drag-and-drop OTA
+
+`esp_tinyuf2` presents a virtual USB Mass Storage drive to the host. Dragging a UF2-format firmware file onto the drive triggers an OTA update. The component also supports mapping NVS key-value pairs to a `.ini` file on the virtual drive.
+
+**Supported chips:** ESP32-S2, ESP32-S3
+
+<Steps>
+  <Step title="Add the component dependency">
+    ```bash
+    idf.py add-dependency "esp_tinyuf2"
+    ```
+  </Step>
+  <Step title="Configure the partition table">
+    The partition table must include at least two OTA app partitions:
+
+    ```
+    nvs,      data, nvs,  ,       0x4000,
+    otadata,  data, ota,  ,       0x2000,
+    phy_init, data, phy,  ,       0x1000,
+    ota_0,    app,  ota_0,,       1500K,
+    ota_1,    app,  ota_1,,       1500K,
+    ```
+  </Step>
+  <Step title="Install TinyUF2 in your application">
+    ```c
+    // OTA configuration
+    tinyuf2_ota_config_t ota_config = DEFAULT_TINYUF2_OTA_CONFIG();
+    ota_config.complete_cb = uf2_update_complete_cb;
+    ota_config.if_restart = false;   // disable auto-restart
+
+    // NVS configuration
+    tinyuf2_nvs_config_t nvs_config = DEFAULT_TINYUF2_NVS_CONFIG();
+    nvs_config.part_name = "nvs";
+    nvs_config.namespace_name = "myuf2";
+    nvs_config.modified_cb = uf2_nvs_modified_cb;
+
+    esp_tinyuf2_install(&ota_config, &nvs_config);
+    ```
+  </Step>
+  <Step title="Build and generate a UF2 file">
+    Initial flash:
+
+    ```bash
+    idf.py build flash
+    ```
+
+    Subsequent OTA builds generate a `.uf2` file:
+
+    ```bash
+    idf.py uf2-ota
+    ```
+  </Step>
+  <Step title="Drag and drop to upgrade">
+    Connect the device via USB. A virtual drive named `ESP32Sx-UF2` appears. Drag the `.uf2` file onto it to upgrade the firmware.
+  </Step>
+</Steps>
+
+#### Convert an existing binary to UF2
+
+```bash
+uf2conv.py your_firmware.bin -c -b 0x00 -f ESP32S3
+```
+
+Or use the numeric family ID:
+
+```bash
+uf2conv.py your_firmware.bin -c -b 0x00 -f 0xc47e5767
+```
+
+#### NVS hidden values
+
+To prevent sensitive NVS values from being read back through the virtual drive, call:
+
+```c
+esp_tinyuf2_add_key_hidden("password");
+```
+
+Enable the feature in menuconfig: `Component config → TinyUF2 Config → Enable UF2 ini file hide NVS value`.
+
+#### Bootloader UF2 mode
+
+By embedding a special UF2 app into the bootloader, you can enter firmware update mode automatically when no valid firmware is found, or by pulling the `BOOT_UF2` pin low, or by calling `esp_restart_from_tinyuf2()`.
+
+**Examples:**
+- `usb/device/usb_uf2_ota`
+- `usb/device/usb_uf2_nvs`
+- `usb/device/bootloader_uf2`

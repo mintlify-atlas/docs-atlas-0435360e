@@ -1,0 +1,329 @@
+---
+title: "AI overview"
+description: "OpenAI API integration, Model Context Protocol (MCP) C SDK, and Xiaozhi voice assistant for ESP32."
+keywords: ["AI", "OpenAI", "ChatGPT", "MCP", "Model Context Protocol", "Xiaozhi", "voice assistant", "ESP32"]
+---
+
+ESP-IoT-Solution provides three AI integration components that let ESP32 devices communicate with large language models, expose device capabilities to AI agents, and run bidirectional voice assistant sessions.
+
+<CardGroup cols={3}>
+  <Card title="OpenAI" icon="brain" href="#openai-component">
+    Call ChatGPT, Whisper, DALL·E, and other OpenAI APIs directly from ESP-IDF.
+  </Card>
+  <Card title="MCP C SDK" icon="plug" href="#mcp-model-context-protocol">
+    Expose ESP32 device tools to any MCP-compatible AI agent over HTTP.
+  </Card>
+  <Card title="Xiaozhi" icon="microphone" href="#xiaozhi-voice-assistant">
+    Bidirectional streaming voice assistant backed by Qwen or DeepSeek LLMs.
+  </Card>
+</CardGroup>
+
+---
+
+## OpenAI component
+
+The `openai` component is a C port of the [OpenAI-ESP32](https://github.com/me-no-dev/OpenAI-ESP32) Arduino library, adapted for ESP-IDF. It wraps the OpenAI REST API behind a structured C interface.
+
+### Supported APIs
+
+| API | Status | Notes |
+|-----|--------|-------|
+| Chat Completions | ✓ | Text, image, and audio input; streaming not yet supported |
+| Audio (Speech & Transcription) | ✓ | Speech supports streaming output |
+| Images (Generate, Edit, Variation) | ✓ | |
+| Embeddings | ✓ | |
+| Moderations | ✓ | |
+| Responses | ✗ | Use Chat Completions instead |
+| Fine-tuning, Batch, Files | ✗ | |
+
+### Installation
+
+```bash
+idf.py add-dependency "espressif/openai"
+```
+
+### Initialization
+
+```c
+#include "OpenAI.h"
+
+// Create an OpenAI client with your API key
+OpenAI_t *openai = OpenAICreate("sk-...");
+
+// Optional: change base URL (for proxies or compatible APIs)
+OpenAIChangeBaseURL(openai, "https://your-proxy.example.com/v1");
+```
+
+### Chat completions
+
+```c
+OpenAI_ChatCompletion_t *chat = openai->chatCreate(openai);
+chat->setModel(chat, "gpt-4o-mini");
+chat->setSystem(chat, "You are a helpful assistant for IoT devices.");
+chat->setMaxTokens(chat, 256);
+
+OpenAI_StringResponse_t *resp = chat->message(chat, "What is MQTT?", true);
+if (resp->getError(resp) == NULL) {
+    printf("Response: %s\n", resp->getData(resp, 0));
+}
+resp->deleteResponse(resp);
+openai->chatDelete(chat);
+```
+
+### Multimodal input
+
+Use `multiModalMessage` for image or audio input alongside text:
+
+```c
+// Send an image URL alongside a text prompt
+OpenAI_StringResponse_t *resp = chat->multiModalMessage(
+    chat, "image_url", "https://example.com/image.jpg", false);
+```
+
+### Audio transcription (Whisper)
+
+```c
+OpenAI_AudioTranscription_t *asr = openai->audioTranscriptionCreate(openai);
+asr->setLanguage(asr, "en");
+asr->setResponseFormat(asr, OPENAI_AUDIO_RESPONSE_FORMAT_JSON);
+
+char *text = asr->file(asr, audio_data, audio_len,
+                        OPENAI_AUDIO_INPUT_FORMAT_WAV);
+printf("Transcribed: %s\n", text);
+free(text);
+openai->audioTranscriptionDelete(asr);
+```
+
+### Text-to-speech
+
+```c
+OpenAI_AudioSpeech_t *tts = openai->audioSpeechCreate(openai);
+tts->setModel(tts, "tts-1");
+tts->setVoice(tts, "nova");
+tts->setResponseFormat(tts, OPENAI_AUDIO_OUTPUT_FORMAT_MP3);
+
+// Streaming callback receives audio chunks as they arrive
+tts->speechStream(tts, "Hello from ESP32!", audio_stream_callback);
+openai->audioSpeechDelete(tts);
+```
+
+### Image generation
+
+```c
+OpenAI_ImageGeneration_t *img = openai->imageGenerationCreate(openai);
+img->setSize(img, OPENAI_IMAGE_SIZE_512x512);
+img->setResponseFormat(img, OPENAI_IMAGE_RESPONSE_FORMAT_URL);
+img->setN(img, 1);
+
+OpenAI_ImageResponse_t *resp = img->prompt(img, "A smart home device on a desk");
+printf("Image URL: %s\n", resp->getData(resp, 0));
+resp->deleteResponse(resp);
+openai->imageGenerationDelete(img);
+```
+
+### Cleanup
+
+```c
+OpenAIDelete(openai);
+```
+
+<AccordionGroup>
+  <Accordion title="Error: Failed to allocate request buffer!">
+    This error means dynamic memory allocation failed, usually because audio data is too large for available RAM.
+
+    **Solutions:**
+    1. Enable PSRAM and set `CONFIG_SPIRAM_USE_MALLOC=y` in `sdkconfig`.
+    2. Reduce audio length or sampling rate before calling `audioTranscription->file`.
+  </Accordion>
+  <Accordion title="Real-time / WebRTC streaming">
+    The `openai` component does not implement real-time streaming. For low-latency voice I/O, use:
+    - WebSocket: [openai-realtime-embedded](https://github.com/openai/openai-realtime-embedded)
+    - WebRTC: [esp-webrtc-solution openai_demo](https://github.com/espressif/esp-webrtc-solution/tree/main/solutions/openai_demo)
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## MCP (Model Context Protocol)
+
+The `mcp-c-sdk` component implements the [Model Context Protocol](https://modelcontextprotocol.io/) in C, allowing an ESP32 device to act as an MCP **server** (exposing device tools to AI agents) or as an MCP **client** (calling tools on a remote MCP server).
+
+**Supported chips:** ESP32, ESP32-C2, ESP32-C3, ESP32-C6, ESP32-S3
+
+### Architecture
+
+```
+AI Agent (Claude, GPT, etc.)
+        ↕  JSON-RPC 2.0 over HTTP
+ESP32 MCP Server
+  ├── tool: set_volume
+  ├── tool: set_brightness
+  ├── tool: set_color (HSV/RGB)
+  └── tool: set_theme
+```
+
+### Server example
+
+<Steps>
+  <Step title="Create tools with callbacks">
+    ```c
+    #include "esp_mcp_tool.h"
+    #include "esp_mcp_mgr.h"
+
+    static esp_mcp_value_t set_brightness_cb(const esp_mcp_property_list_t *props)
+    {
+        // Read the 'level' parameter and apply it
+        esp_mcp_value_t result = { .type = ESP_MCP_VALUE_TYPE_STRING,
+                                   .str_val = "brightness updated" };
+        return result;
+    }
+
+    esp_mcp_tool_t *brightness_tool = esp_mcp_tool_create(
+        "set_brightness",
+        "Set the display brightness level (0-100)",
+        set_brightness_cb);
+    ```
+  </Step>
+  <Step title="Add input properties to the tool">
+    ```c
+    #include "esp_mcp_property.h"
+
+    esp_mcp_property_t *level_prop = esp_mcp_property_create_integer(
+        "level", "Brightness level 0-100", true);
+    esp_mcp_tool_add_property(brightness_tool, level_prop);
+    ```
+  </Step>
+  <Step title="Initialize the MCP manager and start HTTP transport">
+    ```c
+    esp_mcp_mgr_config_t config = {
+        .transport = esp_mcp_transport_http_server,
+        .config    = &http_server_config,
+        .instance  = mcp_instance,
+    };
+    esp_mcp_mgr_handle_t handle;
+    ESP_ERROR_CHECK(esp_mcp_mgr_init(config, &handle));
+    ESP_ERROR_CHECK(esp_mcp_mgr_register_endpoint(handle, "mcp_server", NULL));
+    ESP_ERROR_CHECK(esp_mcp_mgr_start(handle));
+    ```
+  </Step>
+</Steps>
+
+### Client example
+
+```c
+// Initialize MCP client transport
+esp_mcp_mgr_config_t config = {
+    .transport = esp_mcp_transport_http_client,
+    .config    = &http_client_config,
+};
+esp_mcp_mgr_handle_t handle;
+esp_mcp_mgr_init(config, &handle);
+esp_mcp_mgr_start(handle);
+
+// Send initialize handshake
+esp_mcp_mgr_req_t req = {
+    .ep_name  = "http://192.168.1.100/mcp",
+    .cb       = my_response_callback,
+    .user_ctx = NULL,
+    .u.init   = { .name = "esp32-client", .version = "1.0.0" },
+};
+esp_mcp_mgr_post_info_init(handle, &req);
+
+// List available tools
+req.u.list.cursor = NULL;
+esp_mcp_mgr_post_tools_list(handle, &req);
+
+// Call a tool
+req.u.call.tool_name = "set_brightness";
+req.u.call.args_json = "{\"level\": 75}";
+esp_mcp_mgr_post_tools_call(handle, &req);
+```
+
+### Key API functions
+
+| Function | Description |
+|----------|-------------|
+| `esp_mcp_mgr_init()` | Initialize MCP transport manager |
+| `esp_mcp_mgr_start()` | Start the transport layer |
+| `esp_mcp_mgr_stop()` | Stop the transport layer |
+| `esp_mcp_mgr_register_endpoint()` | Register a named MCP endpoint |
+| `esp_mcp_mgr_req_handle()` | Process an incoming JSON-RPC request |
+| `esp_mcp_mgr_post_info_init()` | Send MCP initialize request (client) |
+| `esp_mcp_mgr_post_tools_list()` | Send tools/list request (client) |
+| `esp_mcp_mgr_post_tools_call()` | Send tools/call request (client) |
+| `esp_mcp_tool_create()` | Create a named tool with a callback |
+| `esp_mcp_tool_add_property()` | Add an input parameter to a tool |
+
+---
+
+## Xiaozhi voice assistant
+
+Xiaozhi is a bidirectional streaming dialogue component that connects to the [xiaozhi.me](https://xiaozhi.me) cloud service. It delivers real-time voice interaction with AI agents powered by Qwen and DeepSeek large language models.
+
+**Supported chip:** ESP32-S3
+
+### Architecture
+
+```
+Microphone → [ASR] → [LLM] → [TTS] → Speaker
+               ↑                        ↓
+           Streaming audio          Streaming audio
+               ↕
+         xiaozhi.me service
+```
+
+The full pipeline—speech recognition, language model inference, and text-to-speech—runs server-side. The component handles the streaming audio transport.
+
+### Features
+
+- **Protocols:** WebSocket and MQTT+UDP
+- **Audio codecs:** OPUS, G.711, PCM
+- **MCP integration:** Device-side MCP for controlling speaker, LED, servo, GPIO, and other peripherals via AI commands
+- **Languages:** Chinese and English
+- **Wake word:** Reports wake events via `esp_xiaozhi_chat_send_wake_word()`; ESP-SR integration is handled at the application level
+
+### Example
+
+The `ai/xiaozhi_chat` example demonstrates:
+- Full voice interaction with AI agents
+- Device control via MCP protocol
+- Multi-language support
+- Display integration
+
+```bash
+# Add the component
+idf.py add-dependency "espressif/xiaozhi"
+
+# Build and flash the example
+cd examples/ai/xiaozhi_chat
+idf.py build flash monitor
+```
+
+### Key API functions
+
+| Function | Description |
+|----------|-------------|
+| `esp_xiaozhi_chat_send_wake_word()` | Report a wake-word detection event to the component |
+
+<Note>
+  Xiaozhi requires an active internet connection to reach the xiaozhi.me service. The component itself does not bundle local LLM inference.
+</Note>
+
+---
+
+## Example applications
+
+<CardGroup cols={2}>
+  <Card title="mcp/mcp_server" icon="server">
+    MCP server over HTTP exposing JSON-RPC tools for volume, brightness, HSV/RGB color, and theme control.
+  </Card>
+  <Card title="mcp/mcp_client" icon="arrow-right">
+    MCP client over HTTP connecting to a remote MCP server and invoking its tools.
+  </Card>
+  <Card title="ai/xiaozhi_chat" icon="comments">
+    Complete voice assistant application with MCP device control and display support.
+  </Card>
+  <Card title="OpenAI examples" icon="robot">
+    Refer to the `openai` component README for Chat, Audio, and Image API examples.
+  </Card>
+</CardGroup>

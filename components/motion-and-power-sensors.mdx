@@ -1,0 +1,334 @@
+---
+title: "Motion and power sensors"
+description: "ESP-IoT-Solution drivers for IMU/accelerometer sensors, gesture sensors, power measurement ICs, battery fuel gauges, and current/power monitors."
+---
+
+ESP-IoT-Solution provides a set of sensor drivers under `components/sensors/` for measuring motion, detecting gestures, and monitoring electrical power. Each driver follows a handle-based factory pattern with a unified API.
+
+## IMU and accelerometer sensors
+
+Inertial measurement units (IMUs) measure linear acceleration and angular velocity to determine object motion and orientation.
+
+| Chip | Function | Interface | Vendor | HAL |
+|------|----------|-----------|--------|-----|
+| LIS2DH12 | 3-axis accelerometer | I2C | ST | Yes |
+| MPU6050 | 3-axis accelerometer + 3-axis gyroscope | I2C | InvenSense | Yes |
+
+### LIS2DH12
+
+The LIS2DH12 is an ultra-low-power three-axis linear accelerometer from ST's "femto" family. It supports I2C and SPI (only I2C in the ESP-IoT-Solution driver), configurable full-scale ranges (±2g to ±16g), and hardware interrupt generation for inertial wake-up and free-fall detection.
+
+**Component:** `components/sensors/imu/lis2dh12/`
+
+```bash
+idf.py add-dependency "espressif/lis2dh12=*"
+```
+
+```c
+#include "lis2dh12.h"
+#include "i2c_bus.h"
+
+// GPIO2 = SDA, GPIO1 = SCL (no external pull-ups needed; driver enables internal pull-ups)
+i2c_bus_handle_t i2c_bus = i2c_bus_create(I2C_NUM_0, &i2c_conf);
+lis2dh12_handle_t sensor  = lis2dh12_create(i2c_bus, LIS2DH12_I2C_ADDRESS);
+
+lis2dh12_config_t config = {
+    .odr        = LIS2DH12_ODR_100HZ,
+    .opt_mode   = LIS2DH12_OPT_NORMAL,
+    .z_enable   = ENABLE,
+    .y_enable   = ENABLE,
+    .x_enable   = ENABLE,
+    .bdu_status = ENABLE,
+    .fs         = LIS2DH12_FS_2G,
+};
+lis2dh12_init(sensor, &config);
+
+lis2dh12_result_t result;
+lis2dh12_get_acce(sensor, &result);
+ESP_LOGI(TAG, "X: %.3f g, Y: %.3f g, Z: %.3f g",
+         result.acce_x, result.acce_y, result.acce_z);
+```
+
+### MPU6050
+
+The MPU6050 combines a 3-axis gyroscope and 3-axis accelerometer in a single package. It communicates over I2C and includes an onboard Digital Motion Processor (DMP) capable of running motion fusion algorithms.
+
+**Component:** `components/sensors/imu/mpu6050/`
+
+```c
+#include "mpu6050.h"
+#include "i2c_bus.h"
+
+i2c_bus_handle_t i2c_bus = i2c_bus_create(I2C_NUM_0, &i2c_conf);
+mpu6050_handle_t sensor  = mpu6050_create(i2c_bus, MPU6050_I2C_ADDRESS);
+
+mpu6050_config(sensor, ACCE_FS_4G, GYRO_FS_500DPS);
+mpu6050_wake_up(sensor);
+
+mpu6050_acce_value_t acce;
+mpu6050_gyro_value_t gyro;
+mpu6050_get_acce(sensor, &acce);
+mpu6050_get_gyro(sensor, &gyro);
+
+ESP_LOGI(TAG, "Acce X: %.2f, Y: %.2f, Z: %.2f",
+         acce.acce_x, acce.acce_y, acce.acce_z);
+ESP_LOGI(TAG, "Gyro X: %.2f, Y: %.2f, Z: %.2f",
+         gyro.gyro_x, gyro.gyro_y, gyro.gyro_z);
+```
+
+---
+
+## Gesture sensors
+
+Gesture sensors detect proximity, ambient light, and directional hand movement using reflected IR light, enabling contactless human-machine interaction.
+
+| Chip | Function | Interface | Vendor | HAL |
+|------|----------|-----------|--------|-----|
+| APDS9960 | Light, RGB, proximity, gesture | I2C | Avago | — |
+
+### APDS9960
+
+The APDS9960 is a multi-function sensor that provides ambient light and color (RGBC) measurements, proximity detection, and directional gesture recognition (up, down, left, right). It uses an I2C interface and includes configurable interrupt outputs.
+
+**Component:** `components/sensors/gesture/apds9960/`
+
+```bash
+idf.py add-dependency "espressif/apds9960"
+```
+
+<Note>
+The APDS9960 gesture engine classifies motion by comparing the differential output of four directional photodiodes. Reliable gesture detection typically requires the sensor to be mounted in an enclosure that blocks ambient light from the sides.
+</Note>
+
+---
+
+## Power measurement
+
+The `power_measure` component provides a unified, object-oriented API for electrical power monitoring on ESP32 series chips. It follows a factory pattern with separate configuration structures for each supported IC.
+
+**Component:** `components/sensors/power_measure/`
+
+### Supported chips
+
+| Chip | Interface | Measurements | Vendor |
+|------|-----------|--------------|--------|
+| BL0937 | GPIO (CF, CF1, SEL) | Voltage, current, active power, energy | Belling |
+| BL0942 | UART or SPI | Voltage, current, power, power factor, energy, frequency | Belling |
+| INA236 | I2C | Voltage, current, power | TI |
+
+<Note>
+Energy accumulation is available on BL0937 and BL0942 only. Line frequency measurement is available on BL0942 only. INA236 provides real-time measurements; BL0937 and BL0942 use cached (pulse-counted) measurements.
+</Note>
+
+### Adding to your project
+
+```bash
+idf.py add-dependency "espressif/power_measure"
+```
+
+### BL0937 example (GPIO-based)
+
+The BL0937 uses hardware pulse counting on the CF and CF1 pins to derive electrical parameters. Calibration factors (KU, KI, KP) must be set to match the shunt resistor and voltage divider on your PCB.
+
+```c
+#include "power_measure.h"
+#include "power_measure_bl0937.h"
+
+power_measure_config_t common_cfg = {
+    .overcurrent              = 15,    // 15 A threshold
+    .overvoltage              = 260,   // 260 V threshold
+    .undervoltage             = 180,   // 180 V threshold
+    .enable_energy_detection  = true,
+};
+
+power_measure_bl0937_config_t bl0937_cfg = {
+    .sel_gpio          = GPIO_NUM_4,
+    .cf1_gpio          = GPIO_NUM_7,
+    .cf_gpio           = GPIO_NUM_3,
+    .pin_mode          = 0,
+    .sampling_resistor = 0.001f,   // 1 mΩ shunt
+    .divider_resistor  = 2010.0f,  // voltage divider
+    .ki = 1.00f, .ku = 0.65f, .kp = 15.0f,
+};
+
+power_measure_handle_t handle;
+ESP_ERROR_CHECK(power_measure_new_bl0937_device(&common_cfg, &bl0937_cfg, &handle));
+
+float voltage, current, power, energy;
+power_measure_get_voltage(handle, &voltage);
+power_measure_get_current(handle, &current);
+power_measure_get_active_power(handle, &power);
+power_measure_get_energy(handle, &energy);
+
+ESP_LOGI(TAG, "V: %.2f V, I: %.3f A, P: %.2f W, E: %.3f kWh",
+         voltage, current, power, energy);
+
+power_measure_delete(handle);
+```
+
+### INA236 example (I2C-based)
+
+The INA236 is a precision power monitor suitable for DC applications. It measures bus voltage and shunt current with high accuracy and reports power via I2C.
+
+```c
+#include "power_measure.h"
+#include "power_measure_ina236.h"
+#include "i2c_bus.h"
+
+i2c_config_t i2c_conf = {
+    .mode             = I2C_MODE_MASTER,
+    .sda_io_num       = GPIO_NUM_20,
+    .sda_pullup_en    = GPIO_PULLUP_ENABLE,
+    .scl_io_num       = GPIO_NUM_13,
+    .scl_pullup_en    = GPIO_PULLUP_ENABLE,
+    .master.clk_speed = 100000,
+};
+i2c_bus_handle_t i2c_bus = i2c_bus_create(I2C_NUM_0, &i2c_conf);
+
+power_measure_config_t common_cfg = {
+    .overcurrent             = 15,
+    .overvoltage             = 260,
+    .undervoltage            = 180,
+    .enable_energy_detection = false,
+};
+
+power_measure_ina236_config_t ina236_cfg = {
+    .i2c_bus  = i2c_bus,
+    .i2c_addr = 0x41,      // default address (A0 = GND, A1 = GND)
+    .alert_en = false,
+    .alert_pin = -1,
+    .alert_cb  = NULL,
+};
+
+power_measure_handle_t handle;
+ESP_ERROR_CHECK(power_measure_new_ina236_device(&common_cfg, &ina236_cfg, &handle));
+
+float voltage, current, power;
+power_measure_get_voltage(handle, &voltage);
+power_measure_get_current(handle, &current);
+power_measure_get_active_power(handle, &power);
+
+power_measure_delete(handle);
+i2c_bus_delete(&i2c_bus);
+```
+
+### BL0937 calibration
+
+The BL0937 uses pulse-counting and requires calibration to match hardware component values. Apply calibration factors iteratively using a known reference load:
+
+<Steps>
+  <Step title="Calibrate voltage (KU)">
+    At no load or light load, measure the actual voltage with a calibrated multimeter and compare to the reported value.
+
+    ```
+    KU_new = KU_old × (voltage_true / voltage_measured)
+    ```
+  </Step>
+  <Step title="Calibrate current (KI)">
+    With a known resistive load connected, compare the reported current to a reference measurement.
+
+    ```
+    KI_new = KI_old × (current_true / current_measured)
+    ```
+  </Step>
+  <Step title="Calibrate power (KP)">
+    At the same load, compare reported active power to a reference wattmeter reading.
+
+    ```
+    KP_new = KP_old × (power_true / power_measured)
+    ```
+  </Step>
+  <Step title="Verify">
+    Repeat until the relative error for voltage, current, and power is within the target range (typically ≤ 1–2%).
+  </Step>
+</Steps>
+
+---
+
+## Power monitors (INA236)
+
+The `power_monitor/ina236` component provides a standalone driver for the Texas Instruments INA236 that can be used independently of the `power_measure` abstraction layer.
+
+**Component:** `components/sensors/power_monitor/ina236/`
+
+The INA236 measures shunt voltage (and calculates current and power) with 16-bit resolution over I2C. It supports configurable averaging, conversion time, and alert output for overcurrent or overvoltage conditions.
+
+---
+
+## Battery fuel gauges
+
+Battery fuel gauges estimate state of charge (SoC), remaining capacity, and state of health (SoH) for Li-Ion cells. ESP-IoT-Solution provides three components in `components/sensors/battery_fuel_gauge/`.
+
+| Chip | Interface | Algorithm | Vendor |
+|------|-----------|-----------|--------|
+| BQ27220 | I2C | CEDV (Compensated End-of-Discharge Voltage) | TI |
+| MAX17048 / MAX17049 | I2C | ModelGauge | Analog Devices |
+| ADC battery estimation | ADC | Voltage-based lookup | — |
+
+### BQ27220
+
+The BQ27220 is a single-cell Li-Ion fuel gauge that uses the CEDV algorithm to account for battery aging and varying discharge rates. It requires uploading CEDV parameters (capacity, internal resistance, DOD curve) specific to the battery cell in use.
+
+```bash
+idf.py add-dependency "espressif/bq27220"
+```
+
+```c
+#include "bq27220.h"
+#include "i2c_bus.h"
+
+static const parameter_cedv_t cedv = {
+    .full_charge_cap = 650,    // mAh
+    .design_cap      = 650,
+    .reserve_cap     = 0,
+    .near_full       = 200,
+    .EDV0 = 3490, .EDV1 = 3511, .EDV2 = 3535,
+    .EMF  = 3670,
+    // ... more parameters
+};
+
+static const gauging_config_t gauging_cfg = {
+    .CCT = 1, .SC = 1, .FCC_LIM = 1, .FC_FOR_VDQ = 1, .IGNORE_SD = 1,
+};
+
+i2c_bus_handle_t i2c_bus = i2c_bus_create(I2C_NUM_0, &i2c_conf);
+
+bq27220_config_t bq_cfg = {
+    .i2c_bus = i2c_bus,
+    .cfg     = &gauging_cfg,
+    .cedv    = &cedv,
+};
+bq27220_handle_t sensor = bq27220_create(&bq_cfg);
+```
+
+### MAX17048 / MAX17049
+
+The MAX17048 (single cell) and MAX17049 (two cells in series) use Analog Devices' ModelGauge algorithm, which does not require a current-sense resistor or battery-learning cycles. SoC is derived entirely from open-circuit voltage modeling.
+
+```bash
+idf.py add-dependency "espressif/max17048"
+```
+
+```c
+#include "max17048.h"
+#include "i2c_bus.h"
+
+i2c_bus_handle_t i2c_bus = i2c_bus_create(I2C_NUM_0, &i2c_conf);
+max17048_handle_t sensor  = max17048_create(i2c_bus, MAX17048_I2CADDR_DEFAULT);
+
+float voltage, percent;
+max17048_get_cell_voltage(sensor, &voltage);
+max17048_get_cell_percent(sensor, &percent);
+
+ESP_LOGI(TAG, "Battery: %.2f V, %.1f%%", voltage, percent);
+```
+
+### ADC battery estimation
+
+The `adc_battery_estimation` component provides a simple voltage-based SoC estimate using the ESP32 ADC, suitable for applications that cannot use a dedicated fuel gauge IC.
+
+**Component:** `components/sensors/battery_fuel_gauge/adc_battery_estimation/`
+
+<Tip>
+The ADC-based approach is less accurate than dedicated fuel gauges because it is sensitive to load current and temperature. Use it for rough indication only, or calibrate the lookup table against the actual discharge curve of your cell.
+</Tip>

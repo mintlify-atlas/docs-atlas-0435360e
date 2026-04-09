@@ -1,0 +1,342 @@
+---
+title: Sensors overview
+description: A unified abstraction layer for managing temperature, humidity, IMU, gesture, light, pressure, gas, and power sensors on ESP32 using Sensor Hub.
+keywords: [sensor hub, ESP32, temperature, humidity, IMU, gesture, AHT20, BME280, SHT3x, LIS2DH12, APDS9960, power monitor]
+---
+
+Sensor Hub is a sensor management component in ESP-IoT-Solution that provides hardware abstraction, device management, and data distribution for a wide range of sensor types. Instead of integrating sensor drivers individually, you select the sensor by name, configure the acquisition interval and range, and register event callbacks to receive data.
+
+## Sensor categories
+
+<CardGroup cols={3}>
+  <Card title="Temperature & humidity" icon="thermometer">
+    AHT20, HDC2010, HTS221, SHT3X, MVH3004D
+  </Card>
+  <Card title="IMU / accelerometer" icon="activity">
+    LIS2DH12 (3-axis accel), MPU6050 (6-axis accel + gyro)
+  </Card>
+  <Card title="Gesture" icon="hand">
+    APDS9960 (light, RGB, and gesture)
+  </Card>
+  <Card title="Light" icon="sun">
+    Illuminance, UV, color (RGBW) sensors
+  </Card>
+  <Card title="Pressure" icon="gauge">
+    Barometric pressure sensors
+  </Card>
+  <Card title="Power & current" icon="zap">
+    BL0937, INA236, BL0942
+  </Card>
+</CardGroup>
+
+## Supported sensors
+
+### Temperature and humidity
+
+| Name     | Function              | Bus | Vendor    | HAL |
+|----------|-----------------------|-----|-----------|-----|
+| AHT20    | Temperature, Humidity | I2C | AOSONG    |     |
+| HDC2010  | Temperature, Humidity | I2C | TI        |     |
+| HTS221   | Temperature, Humidity | I2C | ST        | ✓   |
+| SHT3X    | Temperature, Humidity | I2C | Sensirion | ✓   |
+| MVH3004D | Temperature, Humidity | I2C | —         |     |
+
+### IMU and accelerometer
+
+| Name     | Function                      | Bus | Vendor     | HAL |
+|----------|-------------------------------|-----|------------|-----|
+| LIS2DH12 | 3-axis accelerometer          | I2C | ST         | ✓   |
+| MPU6050  | 3-axis accel + 3-axis gyro    | I2C | InvenSense | ✓   |
+
+### Gesture
+
+| Name    | Function                      | Bus | Vendor | HAL |
+|---------|-------------------------------|-----|--------|-----|
+| APDS9960 | Light, RGB, and gesture       | I2C | Avago  |     |
+
+### Power measurement
+
+| Name   | Function                                            | Interface | Vendor  | HAL |
+|--------|-----------------------------------------------------|-----------|---------|-----|
+| BL0937 | Voltage, current, active power, energy              | GPIO/Pulse| BELLING | ✓   |
+| INA236 | Voltage, current, power (precision)                 | I2C       | TI      | ✓   |
+| BL0942 | Voltage, current, power, power factor, energy, freq | UART/SPI  | BELLING | ✓   |
+
+## Sensor Hub architecture
+
+Sensor Hub uses the ESP-IDF linker script generation mechanism to register sensor drivers into dedicated sections of the output binary. When a sensor component is added to a project, its driver is automatically available by name—no manual driver wiring needed.
+
+The programming model has two roles:
+
+- **Driver developer**: implements the sensor HAL and registers it via `SENSOR_HUB_DETECT_FN`.
+- **Application developer**: calls the Sensor Hub API to create, configure, start, and stop sensors.
+
+## Using Sensor Hub
+
+<Steps>
+  <Step title="Add dependencies">
+    Add `sensor_hub` and the required sensor components to your project's `idf_component.yml`:
+
+    ```yaml
+    dependencies:
+      espressif/sensor_hub: "*"
+      espressif/humiture_sht3x: "*"
+    ```
+  </Step>
+  <Step title="Create a sensor instance">
+    Call `iot_sensor_create` with the sensor name, configuration, and a pointer to receive the handle.
+
+    ```c
+    #include "iot_sensor_hub.h"
+
+    sensor_handle_t sensor = NULL;
+    sensor_config_t config = {
+        .bus      = i2c_bus,        // i2c_bus_handle_t from i2c_bus_create()
+        .addr     = 0x44,           // sensor I2C address
+        .type     = HUMITURE_ID,
+        .mode     = MODE_POLLING,
+        .min_delay = 200,           // acquisition interval in ms
+    };
+
+    ESP_ERROR_CHECK(iot_sensor_create("sht3x", &config, &sensor));
+    ```
+  </Step>
+  <Step title="Register event callbacks">
+    Register a callback for all events on this sensor handle, or target a specific event type.
+
+    ```c
+    static void sensor_event_cb(void *arg, sensor_event_base_t base,
+                                int32_t event_id, void *event_data)
+    {
+        sensor_data_t *data = (sensor_data_t *)event_data;
+
+        if (event_id == SENSOR_TEMP_DATA_READY) {
+            printf("Temperature: %.2f °C\n", data->temperature);
+        } else if (event_id == SENSOR_HUMI_DATA_READY) {
+            printf("Humidity: %.2f %%\n", data->humidity);
+        } else if (event_id == SENSOR_STARTED) {
+            printf("Sensor started\n");
+        }
+    }
+
+    sensor_event_handler_instance_t ctx = NULL;
+    ESP_ERROR_CHECK(iot_sensor_handler_register(sensor, sensor_event_cb, &ctx));
+    ```
+
+    You can also register by sensor type rather than handle:
+
+    ```c
+    ESP_ERROR_CHECK(iot_sensor_handler_register_with_type(
+        HUMITURE_ID, SENSOR_TEMP_DATA_READY, sensor_event_cb, &ctx));
+    ```
+  </Step>
+  <Step title="Start the sensor">
+    Starting the sensor triggers a `SENSOR_STARTED` event and begins periodic data collection.
+
+    ```c
+    ESP_ERROR_CHECK(iot_sensor_start(sensor));
+    ```
+  </Step>
+  <Step title="Stop, unregister, and delete">
+    When done, stop the sensor, unregister the callback, and free resources.
+
+    ```c
+    ESP_ERROR_CHECK(iot_sensor_stop(sensor));
+    ESP_ERROR_CHECK(iot_sensor_handler_unregister(sensor, ctx));
+    ESP_ERROR_CHECK(iot_sensor_delete(sensor));
+    ```
+  </Step>
+</Steps>
+
+## Sensor data types
+
+The `sensor_data_t` struct carries all sensor readings in a union. Each field maps to a specific `sensor_data_event_id_t`.
+
+| Event ID                  | Field         | Unit        |
+|---------------------------|---------------|-------------|
+| `SENSOR_TEMP_DATA_READY`  | `temperature` | °C          |
+| `SENSOR_HUMI_DATA_READY`  | `humidity`    | %           |
+| `SENSOR_ACCE_DATA_READY`  | `acce`        | G           |
+| `SENSOR_GYRO_DATA_READY`  | `gyro`        | dps         |
+| `SENSOR_LIGHT_DATA_READY` | `light`       | lux         |
+| `SENSOR_RGBW_DATA_READY`  | `rgbw`        | lux         |
+| `SENSOR_UV_DATA_READY`    | `uv`          | lux         |
+| `SENSOR_BARO_DATA_READY`  | `baro`        | Pa          |
+| `SENSOR_PROXI_DATA_READY` | `proximity`   | cm          |
+| `SENSOR_TVOC_DATA_READY`  | `tvoc`        | permillage  |
+| `SENSOR_CURRENT_DATA_READY` | `current`   | mA          |
+| `SENSOR_VOLTAGE_DATA_READY` | `voltage`   | mV          |
+
+## Power measurement
+
+The power measurement component supports three chips via a common handle-based API.
+
+<Tabs>
+  <Tab title="BL0937 (GPIO)">
+    ```c
+    #include "power_measure.h"
+    #include "power_measure_bl0937.h"
+
+    power_measure_config_t common = {
+        .overcurrent              = 2000,
+        .overvoltage              = 250,
+        .undervoltage             = 180,
+        .enable_energy_detection  = true,
+    };
+
+    power_measure_bl0937_config_t bl = {
+        .sel_gpio          = GPIO_NUM_4,
+        .cf1_gpio          = GPIO_NUM_7,
+        .cf_gpio           = GPIO_NUM_3,
+        .pin_mode          = 0,
+        .sampling_resistor = 0.001f,
+        .divider_resistor  = 1981.0f,
+        .ki = 2.75f, .ku = 0.65f, .kp = 15.0f,
+    };
+
+    power_measure_handle_t h;
+    ESP_ERROR_CHECK(power_measure_new_bl0937_device(&common, &bl, &h));
+
+    float voltage, current, power, energy;
+    power_measure_get_voltage(h, &voltage);
+    power_measure_get_current(h, &current);
+    power_measure_get_active_power(h, &power);
+    power_measure_get_energy(h, &energy);
+
+    power_measure_delete(h);
+    ```
+  </Tab>
+  <Tab title="INA236 (I2C)">
+    ```c
+    #include "power_measure.h"
+    #include "power_measure_ina236.h"
+    #include "i2c_bus.h"
+
+    i2c_config_t conf = {
+        .mode            = I2C_MODE_MASTER,
+        .sda_io_num      = GPIO_NUM_20,
+        .sda_pullup_en   = GPIO_PULLUP_ENABLE,
+        .scl_io_num      = GPIO_NUM_13,
+        .scl_pullup_en   = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 100000,
+    };
+    i2c_bus_handle_t bus = i2c_bus_create(I2C_NUM_0, &conf);
+
+    power_measure_config_t common = {
+        .overcurrent = 15, .overvoltage = 260, .undervoltage = 180,
+    };
+    power_measure_ina236_config_t ina = {
+        .i2c_bus = bus, .i2c_addr = 0x41,
+    };
+
+    power_measure_handle_t h;
+    ESP_ERROR_CHECK(power_measure_new_ina236_device(&common, &ina, &h));
+
+    float voltage, current, power;
+    power_measure_get_voltage(h, &voltage);
+    power_measure_get_current(h, &current);
+    power_measure_get_active_power(h, &power);
+
+    power_measure_delete(h);
+    i2c_bus_delete(&bus);
+    ```
+  </Tab>
+  <Tab title="BL0942 (UART)">
+    ```c
+    #include "power_measure.h"
+    #include "power_measure_bl0942.h"
+
+    power_measure_config_t common = {
+        .overcurrent = 15, .overvoltage = 260, .undervoltage = 180,
+        .enable_energy_detection = true,
+    };
+    power_measure_bl0942_config_t bl0942 = {
+        .addr           = 0,
+        .shunt_resistor = 0.001f,
+        .divider_ratio  = 3760.0f,
+        .use_spi        = false,
+        .uart = {
+            .uart_num = UART_NUM_1,
+            .tx_io    = GPIO_NUM_6,
+            .rx_io    = GPIO_NUM_7,
+            .baud     = 4800,
+        },
+    };
+
+    power_measure_handle_t h;
+    ESP_ERROR_CHECK(power_measure_new_bl0942_device(&common, &bl0942, &h));
+
+    float voltage, current, power, pf, energy, freq;
+    power_measure_get_voltage(h, &voltage);
+    power_measure_get_current(h, &current);
+    power_measure_get_active_power(h, &power);
+    power_measure_get_power_factor(h, &pf);
+    power_measure_get_energy(h, &energy);
+    power_measure_get_line_freq(h, &freq);
+
+    power_measure_delete(h);
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  `power_measure_get_energy()` returns valid data only on BL0937 and BL0942. `power_measure_get_line_freq()` is supported on BL0942 only.
+</Note>
+
+## BL0937 calibration
+
+The BL0937 uses a hardware pulse counting method. Calibration factors KU (voltage), KI (current), and KP (power) must be tuned for accurate measurements:
+
+```text
+KU_new = KU_old * (voltage_true / voltage_meas)
+KI_new = KI_old * (current_true / current_meas)
+KP_new = KP_old * (power_true  / power_meas)
+```
+
+Apply the calibrated factors to the `ki`, `ku`, and `kp` fields of `power_measure_bl0937_config_t`. Repeat the calibration loop until voltage, current, and power errors are within your target (typically ≤ 1–2%).
+
+## Writing a sensor driver
+
+Driver developers implement a HAL struct and register it with `SENSOR_HUB_DETECT_FN`:
+
+```c
+#include "iot_sensor_hub.h"
+
+static humiture_impl_t sht3x_impl = {
+    .init                = humiture_sht3x_init,
+    .deinit              = humiture_sht3x_deinit,
+    .test                = humiture_sht3x_test,
+    .acquire_humidity    = humiture_sht3x_acquire_humidity,
+    .acquire_temperature = humiture_sht3x_acquire_temperature,
+};
+
+SENSOR_HUB_DETECT_FN(HUMITURE_ID, sht3x, &sht3x_impl);
+```
+
+In the component's `CMakeLists.txt`, force-link the init symbol so the linker retains the driver:
+
+```cmake
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u humiture_sht3x_init")
+```
+
+## API reference
+
+### Core Sensor Hub functions
+
+| Function | Description |
+|---|---|
+| `iot_sensor_create(name, config, handle)` | Create a sensor instance by name |
+| `iot_sensor_start(handle)` | Start periodic data acquisition |
+| `iot_sensor_stop(handle)` | Pause acquisition (sleep if supported) |
+| `iot_sensor_delete(handle)` | Delete sensor and release resources |
+| `iot_sensor_scan()` | Return number of registered sensor drivers |
+| `iot_sensor_handler_register(handle, cb, ctx)` | Register event callback for a specific sensor |
+| `iot_sensor_handler_unregister(handle, ctx)` | Unregister a callback by its context instance |
+| `iot_sensor_handler_register_with_type(type, id, cb, ctx)` | Register callback for all sensors of a type |
+| `iot_sensor_handler_unregister_with_type(type, id, ctx)` | Unregister a type-scoped callback |
+
+## Examples
+
+- `sensors/sensor_control_led` — Controls an LED based on sensor readings
+- `sensors/sensor_hub_monitor` — Monitors multiple sensors via Sensor Hub
+- `sensors/power_measure` — BL0937, INA236, and BL0942 power measurement

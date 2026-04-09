@@ -1,0 +1,211 @@
+---
+title: "Hardware overview"
+description: "Supported ESP32 chip series, peripheral interfaces, memory configurations, security features, and development board options for ESP-IoT-Solution."
+---
+
+ESP-IoT-Solution runs on all ESP32-family chips. This page summarises the hardware capabilities you can use from the library, helping you choose the right chip and board for your application.
+
+---
+
+## ESP32 chip series
+
+Espressif's ESP32 family covers a wide range of performance, connectivity, and power profiles. All chips are manufactured on advanced process nodes and provide industry-leading RF performance with low power consumption.
+
+<CardGroup cols={3}>
+  <Card title="ESP32" icon="microchip">
+    Dual-core Xtensa LX6, up to 240 MHz. Wi-Fi 802.11 b/g/n + Bluetooth Classic + BLE 4.2. Rich peripheral set including LCD, camera, and Ethernet.
+  </Card>
+  <Card title="ESP32-S2" icon="microchip">
+    Single-core Xtensa LX7, up to 240 MHz. Wi-Fi only. Native USB OTG. Designed for IoT and low-power applications.
+  </Card>
+  <Card title="ESP32-S3" icon="microchip">
+    Dual-core Xtensa LX7, up to 240 MHz. Wi-Fi + BLE 5.0. Native USB OTG + USB Serial/JTAG. AI acceleration instructions.
+  </Card>
+  <Card title="ESP32-C2" icon="microchip">
+    Single-core RISC-V, up to 120 MHz. Wi-Fi + BLE 5.0. Ultra-compact, cost-optimised for high-volume IoT products.
+  </Card>
+  <Card title="ESP32-C3" icon="microchip">
+    Single-core RISC-V, up to 160 MHz. Wi-Fi + BLE 5.0. USB Serial/JTAG. Popular choice for Matter and Thread devices.
+  </Card>
+  <Card title="ESP32-C6 / H2" icon="microchip">
+    RISC-V, up to 160 MHz. C6 adds 802.15.4 (Thread/Zigbee) and Wi-Fi 6. H2 is 802.15.4 + BLE 5.3, no Wi-Fi.
+  </Card>
+</CardGroup>
+
+<Note>
+  For full specifications of each chip variant, use the [ESP Product Selector](https://products.espressif.com/). Check [Compatibility Between ESP-IDF Releases and Revisions of Espressif SoCs](https://github.com/espressif/esp-idf/blob/master/COMPATIBILITY.md) to confirm which ESP-IDF version is recommended for your target.
+</Note>
+
+### Key capabilities (all series)
+
+- **Multi-core processors** — up to dual-core, maximum clock up to 400 MHz
+- **Wi-Fi** — 2.4 GHz (ESP32-C6 adds 5 GHz Wi-Fi 6)
+- **Bluetooth** — BLE 5.x with Mesh support; Classic Bluetooth on original ESP32
+- **Ultra-low-power coprocessor** — autonomous operation during deep sleep
+- **Deep sleep and light sleep modes** — sub-10 µA deep-sleep current on many variants
+
+---
+
+## Peripheral interfaces
+
+ESP32-series chips provide a rich set of both general-purpose and dedicated peripheral interfaces. Availability varies by chip — consult the datasheet for your specific target.
+
+### General-purpose interfaces
+
+| Interface | Description |
+| --------- | ----------- |
+| **GPIO** | Configurable input/output pins; supports interrupts, wakeup, pull-up/down |
+| **UART** | Universal Asynchronous Receiver-Transmitter; up to 3 controllers |
+| **I2C** | Two-wire serial bus; up to 2 controllers, supports master and slave modes |
+| **I2S** | Inter-IC Sound; for audio ADC/DAC and digital microphones (PDM, PCM) |
+| **SPI** | Serial Peripheral Interface; up to 4 controllers (2 general-purpose) |
+| **SDIO** | SD/SDIO host and slave interface for SD cards and external peripherals |
+| **USB OTG** | Full-speed USB 1.1 host and device (ESP32-S2, S3, C3, C6) |
+
+### Dedicated interfaces
+
+| Interface | Description |
+| --------- | ----------- |
+| **LCD** | Parallel (8/16-bit) and SPI/QSPI/RGB interfaces for display panels |
+| **Camera** | Parallel DVP interface for OV2640 and similar image sensors |
+| **Ethernet** | 10/100 Mbps MAC with external PHY support (ESP32, ESP32-P4) |
+| **CAN / TWAI** | Two-Wire Automotive Interface compatible with CAN 2.0 |
+| **Touch sensor** | Up to 14 capacitive touch channels with proximity and slider support |
+| **LED PWM** | Up to 16 independent PWM channels for LED dimming and RGB control |
+| **Temperature sensor** | On-chip temperature measurement |
+| **RMT** | Remote Control Transceiver for IR send/receive and LED strip protocols |
+
+<Tabs>
+  <Tab title="Display interfaces">
+    ESP-IoT-Solution includes drivers for more than 20 LCD panels. Supported connection types:
+
+    - **SPI / QSPI** — single, dual, and quad SPI display buses
+    - **8-bit and 16-bit parallel** — classic MCU-bus panels via `esp_lcd` HAL
+    - **RGB parallel** — high-speed interface for larger panels (ESP32-S3 and later)
+    - **USB display** — USB-attached display devices via `esp_lcd_usb_display`
+
+    The `esp_lcd_panel_io_additions` component extends the standard `esp_lcd` bus with I2C and 3-wire SPI options.
+  </Tab>
+  <Tab title="Touch interfaces">
+    Capacitive touch is handled by dedicated hardware on ESP32, ESP32-S2, and ESP32-S3.
+
+    ESP-IoT-Solution provides higher-level abstractions:
+
+    - `touch_button` — single button detection with debounce
+    - `touch_slider_sensor` — linear and rotary slider
+    - `touch_proximity_sensor` — proximity detection without contact
+    - `touch_button_sensor` — multi-channel button array
+
+    For SPI/I2C touch controller ICs (e.g., external panels), use the `esp_lcd_touch_*` family of drivers.
+  </Tab>
+  <Tab title="Audio interfaces">
+    I2S and PDM peripherals are commonly used for audio:
+
+    - **I2S** — connects to external DAC/ADC chips and digital microphones
+    - **PDM** — Pulse Density Modulation microphones (supported on ESP32-S3 and others)
+    - **PWM audio** — the `pwm_audio` component provides audio output through a GPIO pin using the LEDC PWM peripheral without any external DAC
+
+    For USB audio class devices, see `usb_device_uac` (device) and `usb_stream` (host).
+  </Tab>
+</Tabs>
+
+---
+
+## Memory
+
+| Memory type | Details |
+| ----------- | ------- |
+| **Internal SRAM** | Up to 768 KB depending on chip variant; shared between instruction and data buses |
+| **External PSRAM** | SPI-connected pseudo-SRAM expansion, typically 2–8 MB (Octal PSRAM available on ESP32-S3) |
+| **Internal Flash** | 2–16 MB embedded or via QSPI; stores firmware, NVS, and OTA partitions |
+| **External Flash** | Additional QSPI Flash can be connected for larger storage needs |
+
+<Note>
+  PSRAM and external Flash are accessed transparently through the MMU. Large framebuffers for LCD or camera pipelines typically require external PSRAM.
+</Note>
+
+---
+
+## Security features
+
+ESP32-series chips include a hardware security subsystem that protects firmware and data without software overhead.
+
+<CardGroup cols={2}>
+  <Card title="Hardware encryption engine" icon="lock">
+    AES-128/192/256, SHA-2, RSA, and ECC accelerators built into silicon. Encryption and decryption run at full throughput without blocking the CPU.
+  </Card>
+  <Card title="Secure boot" icon="shield-check">
+    Cryptographically verifies the bootloader and application image on every boot using a key burned into eFuses. Prevents unauthorised firmware execution.
+  </Card>
+  <Card title="Flash encryption" icon="key">
+    Encrypts the entire Flash contents using AES-XTS with a hardware key that never leaves the chip. Plain-text firmware cannot be read back from the Flash interface.
+  </Card>
+  <Card title="Digital signature" icon="file-signature">
+    RSA or ECDSA private keys stored in eFuses and used only by hardware; the CPU never has direct access to the key material.
+  </Card>
+</CardGroup>
+
+---
+
+## Development board options
+
+You can use any ESP32-family development board with ESP-IoT-Solution. Several boards have explicit support through the [esp-bsp](https://github.com/espressif/esp-bsp) Board Support Package repository, which provides pin definitions, display initialisation, and sensor configuration for each board.
+
+### Boards with esp-bsp support
+
+Some example boards supported by esp-bsp:
+
+| Board | Chip | Key features |
+| ----- | ---- | ------------ |
+| ESP32-S3-Box-3 | ESP32-S3 | LCD, microphone, speaker, camera connector |
+| ESP32-S3-EYE | ESP32-S3 | OV2640 camera, microphone, LCD |
+| ESP32-S3-LCD-EV-Board | ESP32-S3 | RGB LCD, PSRAM, capacitive touch |
+| ESP-Wrover-Kit | ESP32 | LCD, camera connector, SD card, JTAG |
+| M5Stack-CoreS3 | ESP32-S3 | LCD, IMU, microphone, USB-C |
+
+<Note>
+  The full list of supported boards and their BSP components is maintained in the [esp-bsp GitHub repository](https://github.com/espressif/esp-bsp). Each BSP is also published as an independent component on the [ESP Component Registry](https://components.espressif.com/).
+</Note>
+
+### Espressif hardware reference designs in this repository
+
+The `docs/en/hw-reference/` directory contains guides for the following Espressif evaluation boards:
+
+<CardGroup cols={2}>
+  <Card title="ESP32-LCDKit" icon="display" href="https://github.com/espressif/esp-iot-solution/blob/master/docs/en/hw-reference/ESP32_LCDKit_guide.rst">
+    HMI development board based on ESP32-DevKitC with SPI and parallel LCD interfaces, SD card, and DAC audio.
+  </Card>
+  <Card title="ESP32-Sense Kit" icon="hand-pointer" href="https://github.com/espressif/esp-iot-solution/blob/master/docs/en/hw-reference/esp32_sense_kit_guide.rst">
+    Touch sensor evaluation kit with swappable daughterboards for linear slider, wheel slider, matrix buttons, and spring buttons.
+  </Card>
+  <Card title="ESP32-MeshKit-Sense" icon="wifi" href="https://github.com/espressif/esp-iot-solution/blob/master/docs/en/hw-reference/ESP32-MeshKit-Sense_guide.rst">
+    Ultra-low-power sensor node for ESP-MESH networks with environmental sensors and e-ink display.
+  </Card>
+  <Card title="ESP-Prog" icon="bug" href="https://github.com/espressif/esp-iot-solution/blob/master/docs/en/hw-reference/ESP-Prog_guide.rst">
+    JTAG debug and download tool for all ESP32-family chips. Provides automatic reset, boot mode control, and 3.3 V power.
+  </Card>
+</CardGroup>
+
+---
+
+## Application scenarios
+
+ESP32-series SoCs are used across a broad range of industries:
+
+- **Smart home** — lighting control, plugs, sensors, voice assistants
+- **Industrial IoT** — edge gateways, motor controllers, condition monitoring
+- **Wearables** — health sensors, displays, BLE connectivity
+- **HMI panels** — touchscreen interfaces with LVGL on RGB LCD
+- **Computer vision** — camera pipelines with face detection and gesture recognition
+- **Audio** — voice interfaces, Bluetooth speakers, USB audio devices
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Set up your toolchain and flash your first example.
+  </Card>
+  <Card title="Component reference" icon="cube" href="/components/i2c-bus">
+    Browse the full API reference for every ESP-IoT-Solution component.
+  </Card>
+</CardGroup>

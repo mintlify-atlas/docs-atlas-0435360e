@@ -1,0 +1,166 @@
+---
+title: "Audio overview"
+description: "PWM audio output, DAC audio, ADC microphone input, USB audio, and AVI playback components in ESP-IoT-Solution."
+---
+
+ESP-IoT-Solution provides several audio components that cover common cost-sensitive use cases without requiring an external audio codec chip.
+
+<CardGroup cols={2}>
+  <Card title="PWM audio" icon="wave-square" href="#pwm-audio">
+    Output audio through any GPIO using the LEDC peripheral.
+  </Card>
+  <Card title="DAC audio" icon="volume-high" href="#dac-audio">
+    Higher-fidelity output via the built-in DAC on supported chips.
+  </Card>
+  <Card title="ADC microphone" icon="microphone" href="#adc-microphone">
+    Capture analog microphone data without a codec chip.
+  </Card>
+  <Card title="USB audio (UAC)" icon="usb" href="/components/usb-device">
+    USB Audio Class device support.
+  </Card>
+</CardGroup>
+
+---
+
+## PWM audio
+
+PWM audio uses the ESP32 LEDC peripheral to generate audio-frequency PWM signals. No external codec is required — a simple low-pass RC filter on the output pin recovers the audio waveform.
+
+**Features**
+
+- Any GPIO with output capability can be used as the audio output pin
+- 8-bit to 10-bit PWM resolution
+- Stereo support
+- 8 kHz to 48 kHz sampling rate
+
+<Warning>
+PWM output requires an external low-pass filter to remove the carrier frequency before driving a speaker or amplifier.
+</Warning>
+
+### PWM frequency trade-off
+
+PWM frequency is derived from the APB clock (80 MHz) and the resolution:
+
+```
+f_pwm = f_APB / 2^res_bits
+```
+
+At `LEDC_TIMER_10_BIT` resolution the PWM frequency is ~78 kHz. Increasing resolution lowers frequency, and vice versa. Choose based on your audio quality requirements.
+
+### Add the component
+
+```bash
+idf.py add-dependency "espressif/pwm_audio"
+```
+
+### Code example
+
+```c
+#include "pwm_audio.h"
+
+pwm_audio_config_t pac = {
+    .duty_resolution    = LEDC_TIMER_10_BIT,
+    .gpio_num_left      = GPIO_NUM_25,
+    .ledc_channel_left  = LEDC_CHANNEL_0,
+    .gpio_num_right     = GPIO_NUM_26,
+    .ledc_channel_right = LEDC_CHANNEL_1,
+    .ledc_timer_sel     = LEDC_TIMER_0,
+    .tg_num             = TIMER_GROUP_0,
+    .timer_num          = TIMER_0,
+    .ringbuf_len        = 1024 * 8,
+};
+
+ESP_ERROR_CHECK(pwm_audio_init(&pac));
+ESP_ERROR_CHECK(pwm_audio_set_param(48000, 8, 2)); /* 48 kHz, 8-bit, stereo */
+ESP_ERROR_CHECK(pwm_audio_start());
+
+while (1) {
+    /* Decode your audio source (MP3, WAV, …) into audio_data */
+    size_t written = 0;
+    pwm_audio_write(audio_data, length, &written, pdMS_TO_TICKS(1000));
+}
+```
+
+---
+
+## DAC audio
+
+DAC audio uses the built-in digital-to-analog converter available on ESP32 (GPIO25/GPIO26) and ESP32-S2 for better signal quality than PWM at the cost of lower flexibility.
+
+### Add the component
+
+```bash
+idf.py add-dependency "espressif/dac_audio"
+```
+
+<Note>
+DAC audio is only supported on chips that include a built-in DAC peripheral (ESP32, ESP32-S2). Check the datasheet for your target before using this component.
+</Note>
+
+---
+
+## ADC microphone
+
+The `adc_mic` component captures audio from an analog MEMS or electret microphone connected through an op-amp circuit directly to an ADC pin. It follows the `esp_codec_dev` engineering model, so it integrates with the same codec abstraction layer used by I2S-based codecs.
+
+**Features**
+
+- Multi-channel ADC audio sampling
+- Up to 12-bit resolution
+- Maximum sampling rate per channel is limited by the ADC hardware (e.g., 83.3 kHz on ESP32-S3 for a single channel)
+
+### Add the component
+
+```bash
+idf.py add-dependency "espressif/adc_mic"
+```
+
+### Key API
+
+| Function | Description |
+|----------|-------------|
+| `audio_codec_new_adc_data()` | Create an ADC data interface from an `audio_codec_adc_cfg_t` |
+| `esp_codec_dev_new()` | Create a codec device using the ADC data interface |
+| `esp_codec_dev_open()` | Open the device and configure sample rate, channels, bit depth |
+| `esp_codec_dev_read()` | Read captured audio samples into a buffer |
+| `esp_codec_dev_close()` | Close the device (required before using ADC oneshot on the same unit) |
+
+### Code example
+
+```c
+#include "adc_mic.h"
+#include "esp_codec_dev.h"
+
+/* Mono, ADC channel 0, 16 kHz */
+audio_codec_adc_cfg_t cfg = DEFAULT_AUDIO_CODEC_ADC_MONO_CFG(ADC_CHANNEL_0, 16000);
+const audio_codec_data_if_t *adc_if = audio_codec_new_adc_data(&cfg);
+
+esp_codec_dev_cfg_t dev_cfg = {
+    .dev_type = ESP_CODEC_DEV_TYPE_IN,
+    .data_if  = adc_if,
+};
+esp_codec_dev_handle_t dev = esp_codec_dev_new(&dev_cfg);
+
+esp_codec_dev_sample_info_t fs = {
+    .sample_rate    = 16000,
+    .channel        = 1,
+    .bits_per_sample = 16,
+};
+esp_codec_dev_open(dev, &fs);
+
+uint16_t *buf = malloc(16000 * sizeof(uint16_t));
+while (1) {
+    esp_codec_dev_read(dev, buf, 16000 * sizeof(uint16_t));
+    /* Process buf … */
+}
+```
+
+---
+
+## USB audio (UAC)
+
+For USB Audio Class (UAC) device support, see the [USB device components reference](/components/usb-device).
+
+## AVI player
+
+The AVI player component decodes and renders AVI video files and integrates with LVGL for display output. See the [LVGL integration reference](/components/lvgl-integration).

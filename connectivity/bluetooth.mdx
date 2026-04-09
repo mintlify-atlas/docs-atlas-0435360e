@@ -1,0 +1,369 @@
+---
+title: Bluetooth
+description: BLE connectivity components for ESP-IoT-Solution, including Connection Manager, profiles (HRP, HTP, ANP, MIDI, OTA), services, BLE OTA firmware updates, and BTHome V2 protocol support.
+keywords: [bluetooth, BLE, connection manager, GATT, profiles, services, OTA, BTHome, ESP32]
+---
+
+ESP-IoT-Solution provides a comprehensive set of Bluetooth Low Energy (BLE) components that simplify developing BLE peripherals and centrals. The components are built on top of NimBLE and the ESP-IDF BLE stack, and run on ESP32, ESP32-C2, ESP32-C3, and ESP32-S3.
+
+<CardGroup cols={2}>
+  <Card title="BLE Connection Manager" icon="bluetooth" href="#ble-connection-manager">
+    Simplified API for peripheral and central roles, GATT services, and event handling.
+  </Card>
+  <Card title="BLE Profiles" icon="heart-pulse" href="#ble-profiles">
+    Standard profiles: Heart Rate, Health Thermometer, Alert Notification, MIDI, OTA, and Object Transfer.
+  </Card>
+  <Card title="BLE Services" icon="list" href="#ble-services">
+    Individual GATT service implementations: battery, device info, current time, weight scale, and more.
+  </Card>
+  <Card title="BTHome" icon="house" href="#bthome-protocol">
+    BTHome V2 protocol for broadcasting sensor data to Home Assistant and other smart home platforms.
+  </Card>
+</CardGroup>
+
+## BLE Connection Manager
+
+The `ble_conn_mgr` component provides a simplified API interface for the most common BLE operations. It supports peripheral (advertising) and central (scanning, connecting) roles and handles GATT service registration, event dispatch, and connection parameter management.
+
+**Supported SoCs:** ESP32, ESP32-C2, ESP32-C3, ESP32-S3
+
+### Quick start
+
+<Steps>
+  <Step title="Configure and initialize">
+    Create an `esp_ble_conn_config_t` and call `esp_ble_conn_init()`.
+
+    ```c
+    esp_ble_conn_config_t config = {
+        .device_name = CONFIG_EXAMPLE_BLE_ADV_NAME,
+        .broadcast_data = CONFIG_EXAMPLE_BLE_SUB_ADV,
+    };
+
+    ESP_ERROR_CHECK(esp_ble_conn_init(&config));
+    ```
+  </Step>
+  <Step title="Start the BLE session">
+    Call `esp_ble_conn_start()` to begin advertising (peripheral) or scanning (central).
+
+    ```c
+    ESP_ERROR_CHECK(esp_ble_conn_start());
+    ```
+  </Step>
+  <Step title="Stop and deinitialize">
+    When done, stop the session and release resources.
+
+    ```c
+    ESP_ERROR_CHECK(esp_ble_conn_stop());
+    ESP_ERROR_CHECK(esp_ble_conn_deinit());
+    ```
+  </Step>
+</Steps>
+
+### Core API
+
+| Function | Description |
+|---|---|
+| `esp_ble_conn_init(config)` | Initialize connection manager with the given configuration. Must be the first call. |
+| `esp_ble_conn_deinit()` | Deinitialize and free all resources. Must be called last. |
+| `esp_ble_conn_start()` | Start the BLE session (advertising or scanning). |
+| `esp_ble_conn_stop()` | Stop the active BLE session. |
+| `esp_ble_conn_connect()` | Actively connect to a remote device (central role). |
+| `esp_ble_conn_disconnect()` | Disconnect the current connection. |
+| `esp_ble_conn_connect_to_addr(peer_addr, peer_addr_type)` | Connect to a specific peer by address. |
+| `esp_ble_conn_disconnect_by_handle(conn_handle)` | Disconnect a specific connection by handle. |
+
+### Connection information
+
+```c
+uint16_t conn_handle;
+esp_ble_conn_get_conn_handle(&conn_handle);
+
+uint16_t mtu;
+esp_ble_conn_get_mtu(&mtu);
+
+uint8_t peer_addr[6];
+esp_ble_conn_get_peer_addr(peer_addr);
+```
+
+Multi-connection functions are also available: `esp_ble_conn_get_conn_handle_by_addr()`, `esp_ble_conn_get_mtu_by_handle()`, and `esp_ble_conn_get_peer_addr_by_handle()`.
+
+### Advertising and scanning
+
+```c
+// Set custom advertising parameters
+esp_ble_conn_adv_params_t adv_params = {
+    .itvl_min = 0x20,
+    .itvl_max = 0x40,
+    .conn_mode = ESP_BLE_CONN_ADV_CONN_MODE_UND,
+    .disc_mode = ESP_BLE_CONN_ADV_DISC_MODE_GEN,
+    .primary_phy = ESP_BLE_CONN_PHY_1M,
+};
+esp_ble_conn_adv_params_set(&adv_params);
+
+// Set raw advertising data
+esp_ble_conn_adv_data_set(adv_data, adv_data_len);
+esp_ble_conn_adv_start();
+
+// Central role: configure and start scan
+esp_ble_conn_scan_params_t scan_params = {
+    .itvl = 0x12,
+    .window = 0x12,
+    .passive = false,
+    .filter_duplicates = true,
+};
+esp_ble_conn_scan_params_set(&scan_params);
+esp_ble_conn_scan_start();
+```
+
+### Connection parameters and PHY
+
+```c
+// Update connection parameters
+esp_ble_conn_params_t params = {
+    .itvl_min = 0x10,
+    .itvl_max = 0x20,
+    .latency = 0,
+    .supervision_timeout = 400,
+};
+esp_ble_conn_update_params(conn_handle, &params);
+
+// Set preferred PHY
+esp_ble_conn_set_preferred_phy(conn_handle,
+    ESP_BLE_CONN_PHY_MASK_2M,
+    ESP_BLE_CONN_PHY_MASK_2M,
+    0);
+
+// LE Data Length Extension
+esp_ble_conn_set_data_len(conn_handle, 251, 17040);
+```
+
+### Events
+
+The connection manager dispatches events via the ESP event loop using the `BLE_CONN_MGR_EVENTS` base:
+
+| Event | Description |
+|---|---|
+| `ESP_BLE_CONN_EVENT_STARTED` | BLE session started |
+| `ESP_BLE_CONN_EVENT_CONNECTED` | New connection established |
+| `ESP_BLE_CONN_EVENT_DISCONNECTED` | Connection terminated |
+| `ESP_BLE_CONN_EVENT_DATA_RECEIVE` | Notification or indication received |
+| `ESP_BLE_CONN_EVENT_MTU` | GATT MTU negotiated |
+| `ESP_BLE_CONN_EVENT_CONN_PARAM_UPDATE` | Connection parameters updated |
+| `ESP_BLE_CONN_EVENT_SCAN_RESULT` | Advertisement received during scan |
+| `ESP_BLE_CONN_EVENT_ENC_CHANGE` | Link encryption state changed |
+| `ESP_BLE_CONN_EVENT_PASSKEY_ACTION` | Passkey input/display/confirm required |
+| `ESP_BLE_CONN_EVENT_CCCD_UPDATE` | Client Characteristic Configuration Descriptor written |
+
+### L2CAP Connection-Oriented Channels (CoC)
+
+The connection manager includes L2CAP CoC support for high-throughput peer-to-peer data transfer:
+
+```c
+// Initialize the SDU memory pool
+esp_ble_conn_l2cap_coc_mem_init();
+
+// Accept an incoming CoC connection (called from event callback)
+esp_ble_conn_l2cap_coc_accept(conn_handle, peer_sdu_size, chan);
+
+// Release memory pool when done
+esp_ble_conn_l2cap_coc_mem_release();
+```
+
+<Note>
+The `sdu.data` buffer in `ESP_BLE_CONN_L2CAP_COC_EVENT_DATA_RECEIVED` is managed internally and freed immediately after the callback returns. Copy the data before returning if you need to process it asynchronously.
+</Note>
+
+### Examples
+
+- Periodic advertiser: `bluetooth/ble_conn_mgr/ble_periodic_adv`
+- Periodic sync: `bluetooth/ble_conn_mgr/ble_periodic_sync`
+- Serial Port Profile (SPP): `bluetooth/ble_conn_mgr/ble_spp`
+- L2CAP CoC central: `bluetooth/ble_l2cap_coc/l2cap_coc_central`
+- L2CAP CoC peripheral: `bluetooth/ble_l2cap_coc/l2cap_coc_peripheral`
+
+---
+
+## BLE Profiles
+
+BLE profiles are built on top of `ble_conn_mgr` and implement standard Bluetooth SIG profile specifications.
+
+<AccordionGroup>
+  <Accordion title="Heart Rate Profile (HRP)">
+    The Heart Rate Profile enables a data collection device to obtain data from a Heart Rate Sensor that exposes the Heart Rate Service (HRS).
+
+    **Example:** `bluetooth/ble_profiles/ble_hrp`
+
+    The profile is implemented using `esp_hrp` and builds on the Heart Rate Service (HRS) characteristic.
+  </Accordion>
+
+  <Accordion title="Health Thermometer Profile (HTP)">
+    The Health Thermometer Profile enables a data collection device to obtain temperature measurements from a thermometer sensor that exposes the Health Thermometer Service.
+
+    **Example:** `bluetooth/ble_profiles/ble_htp`
+
+    The profile is implemented using `esp_htp` on top of the Health Thermometer Service (HTS).
+  </Accordion>
+
+  <Accordion title="Alert Notification Profile (ANP)">
+    Provides alert notification from a server to a client, allowing a device to be informed of new alerts and unread alert status from categories such as missed calls, SMS, and email.
+
+    **Example:** `bluetooth/ble_profiles/ble_anp`
+  </Accordion>
+
+  <Accordion title="BLE MIDI Profile">
+    Implements the Bluetooth Low Energy MIDI Profile for transmitting MIDI data over BLE connections, suitable for wireless musical instrument applications.
+
+    **Example:** `bluetooth/ble_profiles/ble_midi`
+  </Accordion>
+
+  <Accordion title="Object Transfer Profile (OTP)">
+    The Object Transfer Profile uses L2CAP CoC for large object transfers between devices. It is suitable for transferring firmware images, logs, or other bulk data over BLE.
+
+    **Example:** `bluetooth/ble_profiles/ble_otp`
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## BLE OTA Profile
+
+The BLE OTA Profile provides sector-based firmware transfer over BLE, built on top of `esp_ble_conn_mgr`. It uses OTA service UUID `0x8018` and parses START/STOP commands plus firmware packets sent from the host application.
+
+### Validation
+
+The profile validates the following before writing to flash:
+
+- Command packet CRC16
+- Sector index and packet sequence continuity
+- Sector CRC16 before delivering data to the application callback
+
+### Example
+
+```bash
+# Flash the example
+idf.py -C examples/bluetooth/ble_profiles/ble_ota flash monitor
+```
+
+**Example:** `bluetooth/ble_profiles/ble_ota`
+
+---
+
+## BLE Services
+
+Individual GATT service implementations that can be registered with `ble_conn_mgr`. Each service exposes standard Bluetooth SIG characteristics.
+
+<CardGroup cols={2}>
+  <Card title="Battery Service (BAS)" icon="battery-full">
+    Reports battery level as a percentage (0–100). UUID `0x180F`.
+  </Card>
+  <Card title="Device Information Service (DIS)" icon="circle-info">
+    Exposes manufacturer name, model number, firmware revision, and system ID. UUID `0x180A`.
+  </Card>
+  <Card title="Heart Rate Service (HRS)" icon="heart-pulse">
+    Provides heart rate measurement, body sensor location, and heart rate control point. UUID `0x180D`.
+  </Card>
+  <Card title="Health Thermometer Service (HTS)" icon="thermometer">
+    Provides temperature measurement, temperature type, and intermediate temperature. UUID `0x1809`.
+  </Card>
+  <Card title="Current Time Service (CTS)" icon="clock">
+    Provides current time, local time information, and reference time. UUID `0x1805`.
+  </Card>
+  <Card title="Alert Notification Service (ANS)" icon="bell">
+    Provides supported alert categories, new alert notifications, and unread alert status. UUID `0x1811`.
+  </Card>
+  <Card title="TX Power Service (TPS)" icon="signal">
+    Reports the transmit power level of the BLE device. UUID `0x1804`.
+  </Card>
+  <Card title="User Data Service (UDS)" icon="user">
+    Stores and retrieves user-specific data such as age, weight, height, and gender. UUID `0x181C`.
+  </Card>
+  <Card title="Weight Scale Service (WSS)" icon="weight-scale">
+    Reports body weight measurements with optional BMI and height. UUID `0x181D`.
+  </Card>
+  <Card title="Body Composition Service (BCS)" icon="dna">
+    Provides body composition measurements including fat percentage, muscle mass, and bone mass. UUID `0x181B`.
+  </Card>
+  <Card title="Object Transfer Service (OTS)" icon="file-transfer">
+    Provides mechanisms to expose and transfer objects using L2CAP CoC. UUID `0x1825`.
+  </Card>
+  <Card title="BLE OTA Service" icon="cloud-arrow-up">
+    Custom OTA service (UUID `0x8018`) for firmware updates over BLE.
+  </Card>
+</CardGroup>
+
+---
+
+## BTHome Protocol
+
+The BTHome component implements the **BTHome V2** protocol, which allows ESP32-based devices to broadcast sensor data in a standard format that is recognized by [Home Assistant](https://www.home-assistant.io/) and other smart home platforms without requiring a custom integration.
+
+### Features
+
+- Sensor data reporting (temperature, humidity, pressure, etc.)
+- Binary sensor data reporting (motion, door, window, etc.)
+- Event data reporting
+- Encrypted and non-encrypted broadcast modes
+- Seamless integration with Home Assistant
+
+### Usage
+
+<Steps>
+  <Step title="Create a BTHome instance">
+    ```c
+    bthome_handle_t bthome_recv;
+    ESP_ERROR_CHECK(bthome_create(&bthome_recv));
+    ```
+  </Step>
+  <Step title="Register callbacks">
+    ```c
+    bthome_callbacks_t callbacks = {
+        .store = settings_store,
+        .load = settings_load,
+    };
+    ESP_ERROR_CHECK(bthome_register_callbacks(bthome_recv, &callbacks));
+    ```
+  </Step>
+  <Step title="Configure encryption (optional)">
+    ```c
+    static const uint8_t encrypt_key[] = {
+        0x23, 0x1d, 0x39, 0xc1, 0xd7, 0xcc, 0x1a, 0xb1,
+        0xae, 0xe2, 0x24, 0xcd, 0x09, 0x6d, 0xb9, 0x32
+    };
+    ESP_ERROR_CHECK(bthome_set_encrypt_key(bthome_recv, encrypt_key));
+    ```
+  </Step>
+  <Step title="Set the peer MAC address">
+    ```c
+    static const uint8_t peer_mac[] = {0x54, 0x48, 0xE6, 0x8F, 0x80, 0xA5};
+    ESP_ERROR_CHECK(bthome_set_peer_mac_addr(bthome_recv, peer_mac));
+    ```
+  </Step>
+  <Step title="Parse advertising data">
+    ```c
+    bthome_reports_t *reports = bthome_parse_adv_data(
+        bthome_recv, result.ble_adv, result.adv_data_len
+    );
+    if (reports != NULL) {
+        for (int i = 0; i < reports->num_reports; i++) {
+            // process reports[i]
+        }
+        bthome_free_reports(reports);
+    }
+    ```
+  </Step>
+</Steps>
+
+### BTHome API summary
+
+| Function | Description |
+|---|---|
+| `bthome_create(handle)` | Create a BTHome instance |
+| `bthome_register_callbacks(handle, callbacks)` | Register store/load callbacks |
+| `bthome_set_encrypt_key(handle, key)` | Set the 16-byte AES encryption key |
+| `bthome_set_peer_mac_addr(handle, mac)` | Set the peer device MAC address |
+| `bthome_parse_adv_data(handle, data, len)` | Parse raw BLE advertising data into reports |
+| `bthome_free_reports(reports)` | Free the reports returned by `bthome_parse_adv_data` |
+
+<Tip>
+BTHome V2 uses the service data UUID `0xFCD2`. Devices broadcasting this UUID can be auto-discovered by Home Assistant without any manual configuration.
+</Tip>

@@ -1,0 +1,342 @@
+---
+title: "SPI bus"
+description: "Thread-safe SPI bus abstraction for ESP-IDF that supports multiple devices on a single bus with per-device chip-select, mode, and clock speed configuration."
+---
+
+The `spi_bus` component wraps the ESP-IDF SPI master driver with a bus/device ownership model. A single bus instance manages the physical SPI peripheral, and multiple device handles can coexist on it—each with its own chip-select pin, SPI mode, and clock frequency. Because SPI is full-duplex, transmit and receive happen simultaneously in a single call.
+
+## Installation
+
+<Steps>
+  <Step title="Add the dependency">
+    ```bash
+    idf.py add-dependency "espressif/spi_bus"
+    ```
+  </Step>
+  <Step title="Include the header">
+    ```c
+    #include "spi_bus.h"
+    ```
+  </Step>
+</Steps>
+
+## Constants and types
+
+| Symbol | Value | Description |
+|---|---|---|
+| `NULL_SPI_CS_PIN` | `-1` | Pass as `cs_io_num` when the device has no dedicated chip-select pin. |
+| `spi_bus_handle_t` | `void *` | Opaque handle to an SPI bus instance. |
+| `spi_bus_device_handle_t` | `void *` | Opaque handle to an SPI device on the bus. |
+
+## Structs
+
+### `spi_config_t`
+
+Bus-level configuration. Pins set here are shared by all devices on the bus.
+
+<AccordionGroup>
+  <Accordion title="spi_config_t fields">
+    | Field | Type | Description |
+    |---|---|---|
+    | `miso_io_num` | `gpio_num_t` | GPIO pin for MISO (Master In Slave Out). Pass `-1` if not used. |
+    | `mosi_io_num` | `gpio_num_t` | GPIO pin for MOSI (Master Out Slave In). Pass `-1` if not used. |
+    | `sclk_io_num` | `gpio_num_t` | GPIO pin for SCLK (clock). Pass `-1` if not used. |
+    | `max_transfer_sz` | `int` | Maximum transfer size in bytes. Values below 4096 are rounded up to 4096. Pass `0` for the default (4096). |
+  </Accordion>
+</AccordionGroup>
+
+### `spi_device_config_t`
+
+Per-device configuration. These values are applied automatically before each transfer.
+
+<AccordionGroup>
+  <Accordion title="spi_device_config_t fields">
+    | Field | Type | Description |
+    |---|---|---|
+    | `cs_io_num` | `gpio_num_t` | GPIO pin for chip-select. Use `NULL_SPI_CS_PIN` (-1) if not used. |
+    | `mode` | `uint8_t` | SPI mode (0 – 3) selecting CPOL/CPHA polarity and phase. |
+    | `clock_speed_hz` | `int` | SPI clock frequency in Hz. Must be a divisor of 80 MHz. See `SPI_MASTER_FREQ_*` macros. |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## API reference
+
+### Bus lifecycle
+
+#### `spi_bus_create`
+
+```c
+spi_bus_handle_t spi_bus_create(spi_host_device_t host_id, const spi_config_t *bus_conf);
+```
+
+Initializes an SPI peripheral and returns a bus handle.
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `host_id` | `spi_host_device_t` | SPI peripheral to use. Valid values are `SPI2_HOST` or `SPI3_HOST`. |
+    | `bus_conf` | `const spi_config_t *` | Pointer to the bus pin and transfer-size configuration. |
+  </Accordion>
+  <Accordion title="Returns">
+    An `spi_bus_handle_t` on success, or `NULL` if initialization failed.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+#### `spi_bus_delete`
+
+```c
+esp_err_t spi_bus_delete(spi_bus_handle_t *p_bus_handle);
+```
+
+Deinitializes the SPI peripheral and frees bus resources. Delete all devices before deleting the bus.
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `p_bus_handle` | `spi_bus_handle_t *` | Pointer to the bus handle. Set to `NULL` on success. |
+  </Accordion>
+  <Accordion title="Returns">
+    | Value | Meaning |
+    |---|---|
+    | `ESP_OK` | Bus deleted successfully. |
+    | `ESP_ERR_INVALID_ARG` | Invalid parameter. |
+    | `ESP_FAIL` | Deletion failed. |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+### Device lifecycle
+
+#### `spi_bus_device_create`
+
+```c
+spi_bus_device_handle_t spi_bus_device_create(spi_bus_handle_t bus_handle, const spi_device_config_t *device_conf);
+```
+
+Adds a device to the bus. The device's mode and clock speed are applied automatically per transfer.
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `bus_handle` | `spi_bus_handle_t` | Handle to the parent bus. |
+    | `device_conf` | `const spi_device_config_t *` | Pointer to the device configuration. |
+  </Accordion>
+  <Accordion title="Returns">
+    An `spi_bus_device_handle_t` on success, or `NULL` if creation failed.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+#### `spi_bus_device_delete`
+
+```c
+esp_err_t spi_bus_device_delete(spi_bus_device_handle_t *p_dev_handle);
+```
+
+Removes a device from the bus and frees its resources. Must be paired with `spi_bus_device_create`.
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `p_dev_handle` | `spi_bus_device_handle_t *` | Pointer to the device handle. Set to `NULL` on success. |
+  </Accordion>
+  <Accordion title="Returns">
+    | Value | Meaning |
+    |---|---|
+    | `ESP_OK` | Device deleted successfully. |
+    | `ESP_ERR_INVALID_ARG` | Invalid parameter. |
+    | `ESP_FAIL` | Deletion failed. |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+### Transfer functions
+
+All transfer functions share this return value table:
+
+| Value | Meaning |
+|---|---|
+| `ESP_OK` | Transfer completed successfully. |
+| `ESP_ERR_INVALID_ARG` | Invalid parameter. |
+| `ESP_ERR_TIMEOUT` | Bus busy; operation timed out. |
+
+#### `spi_bus_transfer_byte`
+
+```c
+esp_err_t spi_bus_transfer_byte(spi_bus_device_handle_t dev_handle, uint8_t data_out, uint8_t *data_in);
+```
+
+Transfers a single byte. Because SPI is full-duplex, one byte is sent and one byte is received simultaneously.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `spi_bus_device_handle_t` | Device handle. |
+| `data_out` | `uint8_t` | Byte to send to the device. |
+| `data_in` | `uint8_t *` | Pointer to receive the incoming byte. Pass `NULL` to discard the received byte. |
+
+---
+
+#### `spi_bus_transfer_bytes`
+
+```c
+esp_err_t spi_bus_transfer_bytes(spi_bus_device_handle_t dev_handle, const uint8_t *data_out, uint8_t *data_in, uint32_t data_len);
+```
+
+Transfers multiple bytes. Either `data_out` or `data_in` may be `NULL` to perform a receive-only or send-only transfer respectively.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `spi_bus_device_handle_t` | Device handle. |
+| `data_out` | `const uint8_t *` | Pointer to data to send. Pass `NULL` to send zeros / skip send phase. |
+| `data_in` | `uint8_t *` | Pointer to receive buffer. Pass `NULL` to discard incoming data. |
+| `data_len` | `uint32_t` | Number of bytes to transfer. |
+
+---
+
+#### `spi_bus_transfer_reg16`
+
+```c
+esp_err_t spi_bus_transfer_reg16(spi_bus_device_handle_t dev_handle, uint16_t data_out, uint16_t *data_in);
+```
+
+Transfers a 16-bit value MSB-first. For example, sending `0x1234` transmits `0x12` followed by `0x34`.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `spi_bus_device_handle_t` | Device handle. |
+| `data_out` | `uint16_t` | 16-bit value to send. |
+| `data_in` | `uint16_t *` | Pointer to receive the 16-bit response. Pass `NULL` to discard. |
+
+---
+
+#### `spi_bus_transfer_reg32`
+
+```c
+esp_err_t spi_bus_transfer_reg32(spi_bus_device_handle_t dev_handle, uint32_t data_out, uint32_t *data_in);
+```
+
+Transfers a 32-bit value MSB-first. For example, sending `0x12345678` transmits `0x12` first and `0x78` last.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `spi_bus_device_handle_t` | Device handle. |
+| `data_out` | `uint32_t` | 32-bit value to send. |
+| `data_in` | `uint32_t *` | Pointer to receive the 32-bit response. Pass `NULL` to discard. |
+
+---
+
+### Low-level transaction interface
+
+#### `spi_bus_transmit_begin`
+
+```c
+esp_err_t spi_bus_transmit_begin(spi_bus_device_handle_t dev_handle, spi_transaction_t *p_trans);
+```
+
+Executes a raw `spi_transaction_t` as a polling transaction and blocks until it completes. Use this only when the higher-level transfer functions cannot satisfy your protocol requirements (e.g. transactions that use the command/address phases, or DMA-backed transfers).
+
+<Note>
+  The `spi_transaction_t` struct is defined in `driver/spi_master.h`. Fill in the `tx_buffer`, `rx_buffer`, `length`, and any command/address fields before calling this function.
+</Note>
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `spi_bus_device_handle_t` | Device handle. |
+| `p_trans` | `spi_transaction_t *` | Pointer to a fully populated transaction descriptor. |
+
+Returns the same error codes as the transfer functions above.
+
+---
+
+## Complete example
+
+The example below creates an SPI2 bus, attaches a device, performs several transfer types, then cleans up.
+
+```c
+#include "spi_bus.h"
+#include "esp_log.h"
+
+#define PIN_MISO  19
+#define PIN_MOSI  23
+#define PIN_SCLK  18
+#define PIN_CS    5
+
+static const char *TAG = "spi_example";
+
+void app_main(void)
+{
+    /* 1. Configure and create the bus */
+    spi_config_t bus_conf = {
+        .miso_io_num    = PIN_MISO,
+        .mosi_io_num    = PIN_MOSI,
+        .sclk_io_num    = PIN_SCLK,
+        .max_transfer_sz = 0,   /* use default 4096 bytes */
+    };
+
+    spi_bus_handle_t bus = spi_bus_create(SPI2_HOST, &bus_conf);
+    if (!bus) {
+        ESP_LOGE(TAG, "Failed to create SPI bus");
+        return;
+    }
+
+    /* 2. Register a device on the bus */
+    spi_device_config_t device_conf = {
+        .cs_io_num      = PIN_CS,
+        .mode           = 0,                  /* CPOL=0, CPHA=0 */
+        .clock_speed_hz = 20 * 1000 * 1000,  /* 20 MHz */
+    };
+
+    spi_bus_device_handle_t dev = spi_bus_device_create(bus, &device_conf);
+    if (!dev) {
+        ESP_LOGE(TAG, "Failed to create SPI device");
+        spi_bus_delete(&bus);
+        return;
+    }
+
+    /* 3. Transfer a single byte (full-duplex) */
+    uint8_t rx_byte = 0;
+    spi_bus_transfer_byte(dev, 0xFF, &rx_byte);
+    ESP_LOGI(TAG, "Received byte: 0x%02X", rx_byte);
+
+    /* 4. Send-only multi-byte transfer */
+    uint8_t tx_buf[] = {0xAA, 0xBB, 0xCC};
+    spi_bus_transfer_bytes(dev, tx_buf, NULL, sizeof(tx_buf));
+
+    /* 5. Receive-only multi-byte transfer */
+    uint8_t rx_buf[4] = {0};
+    spi_bus_transfer_bytes(dev, NULL, rx_buf, sizeof(rx_buf));
+    ESP_LOGI(TAG, "Received: %02X %02X %02X %02X",
+             rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3]);
+
+    /* 6. Transfer 16-bit and 32-bit values */
+    uint16_t rx16 = 0;
+    spi_bus_transfer_reg16(dev, 0x1020, &rx16);
+
+    uint32_t rx32 = 0;
+    spi_bus_transfer_reg32(dev, 0x10203040, &rx32);
+    ESP_LOGI(TAG, "rx16=0x%04X  rx32=0x%08lX", rx16, (unsigned long)rx32);
+
+    /* 7. Clean up — devices before bus */
+    spi_bus_device_delete(&dev);
+    spi_bus_delete(&bus);
+}
+```
+
+<Warning>
+  Always delete all device handles before calling `spi_bus_delete`. Deleting the bus while devices are still attached has no effect and bus resources will not be freed.
+</Warning>
+
+<Tip>
+  SPI clock frequencies must be divisors of 80 MHz. Use the `SPI_MASTER_FREQ_*` macros from `driver/spi_master.h` (e.g. `SPI_MASTER_FREQ_20M`) to select a valid value without manual calculation.
+</Tip>

@@ -1,0 +1,447 @@
+---
+title: "LVGL integration"
+description: "Tools for integrating LVGL with ESP-IoT-Solution LCD drivers, including the adapter component, filesystem bridge, image decoding, memory-mapped assets, AVI player, Lottie animations, and the EAF animation player."
+---
+
+ESP-IoT-Solution provides a set of display tool components under `components/display/tools/` that connect the LCD panel drivers to LVGL and add support for filesystems, image decoding, and animation playback.
+
+<CardGroup cols={2}>
+  <Card title="esp_lvgl_adapter" icon="display">
+    Unified LVGL runtime: display registration, tearing control, thread safety, multi-display support.
+  </Card>
+  <Card title="esp_mmap_assets" icon="database">
+    Package images, fonts, and other assets into a flash partition for direct memory-mapped access.
+  </Card>
+  <Card title="esp_lv_fs" icon="folder">
+    Mount a memory-mapped asset partition as an LVGL virtual filesystem drive.
+  </Card>
+  <Card title="esp_lv_decoder" icon="image">
+    Decode JPG, PNG, and QOI images (including split formats) inside LVGL image widgets.
+  </Card>
+  <Card title="esp_lv_lottie_player" icon="film">
+    Play Lottie JSON vector animations in an LVGL canvas using ThorVG.
+  </Card>
+  <Card title="esp_lv_eaf_player" icon="play">
+    Play EAF (Emote Animation Format) compressed animation sequences in LVGL.
+  </Card>
+</CardGroup>
+
+## esp_lvgl_adapter
+
+`esp_lvgl_adapter` provides runtime-managed LVGL integration for ESP-IDF projects. It handles display registration, tearing avoidance, thread-safe LVGL access, and optional integration with filesystem, image decoding, and FreeType fonts. LVGL v8 and v9 are both supported.
+
+**Requirements:** ESP-IDF ≥ 5.5, LVGL 8.x or 9.x.
+
+### Adding to your project
+
+```bash
+idf.py add-dependency "espressif/esp_lvgl_adapter"
+```
+
+### Interface-to-macro mapping
+
+Select the configuration macro that matches your display interface.
+
+| Interface | Default config macro | Default tearing mode |
+|-----------|---------------------|----------------------|
+| MIPI-DSI | `ESP_LV_ADAPTER_DISPLAY_MIPI_DEFAULT_CONFIG(...)` | `TEAR_AVOID_MODE_DEFAULT_MIPI_DSI` |
+| RGB | `ESP_LV_ADAPTER_DISPLAY_RGB_DEFAULT_CONFIG(...)` | `TEAR_AVOID_MODE_DEFAULT_RGB` |
+| SPI / I2C / I80 / QSPI with PSRAM | `ESP_LV_ADAPTER_DISPLAY_SPI_WITH_PSRAM_DEFAULT_CONFIG(...)` | `NONE` |
+| SPI / I2C / I80 / QSPI without PSRAM | `ESP_LV_ADAPTER_DISPLAY_SPI_WITHOUT_PSRAM_DEFAULT_CONFIG(...)` | `NONE` |
+
+### Tearing avoidance modes (RGB and MIPI-DSI only)
+
+| Mode | Frame buffers | Use case |
+|------|--------------|----------|
+| `TRIPLE_PARTIAL` | 3 | 90°/270° rotation, high-res smooth UI |
+| `TRIPLE_FULL` | 3 | Full-screen updates with ample RAM |
+| `DOUBLE_FULL` | 2 | Large-area updates with tighter RAM |
+| `DOUBLE_DIRECT` | 2 | Small-area updates, widget deltas |
+| `NONE` | 1 | Static UI, ultra-low RAM |
+
+<Warning>
+`TEAR_AVOID_MODE_NONE` forbids rotation on RGB and MIPI-DSI interfaces. For SPI/I80/QSPI, use `swap_xy`/`mirror` flags on the panel driver instead.
+</Warning>
+
+### Minimal setup example
+
+```c
+#include "esp_lv_adapter.h"
+
+void app_main(void)
+{
+    // Step 1: Create your esp_lcd panel and (optionally) panel_io
+    esp_lcd_panel_handle_t    panel    = /* ... */;
+    esp_lcd_panel_io_handle_t panel_io = /* ... or NULL */;
+
+    // Step 2: Initialize the adapter
+    esp_lv_adapter_config_t cfg = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+    ESP_ERROR_CHECK(esp_lv_adapter_init(&cfg));
+
+    // Step 3: Register a display
+    esp_lv_adapter_display_config_t disp_cfg =
+        ESP_LV_ADAPTER_DISPLAY_RGB_DEFAULT_CONFIG(
+            panel, panel_io,
+            800, 480,              // horizontal and vertical resolution
+            ESP_LV_ADAPTER_ROTATE_0
+        );
+    lv_display_t *disp = esp_lv_adapter_register_display(&disp_cfg);
+    assert(disp != NULL);
+
+    // Step 4: (Optional) Register a touch input device
+    // esp_lv_adapter_touch_config_t touch_cfg =
+    //     ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, touch_handle);
+    // lv_indev_t *touch = esp_lv_adapter_register_touch(&touch_cfg);
+
+    // Step 5: Start the adapter task
+    ESP_ERROR_CHECK(esp_lv_adapter_start());
+
+    // Step 6: Draw with LVGL (always guard with lock)
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        lv_obj_t *label = lv_label_create(lv_scr_act());
+        lv_label_set_text(label, "Hello LVGL!");
+        lv_obj_center(label);
+        esp_lv_adapter_unlock();
+    }
+}
+```
+
+### Thread-safe access
+
+LVGL APIs are not thread-safe. Always guard LVGL calls with the adapter lock:
+
+```c
+if (esp_lv_adapter_lock(-1) == ESP_OK) {
+    lv_obj_t *btn = lv_btn_create(lv_scr_act());
+    lv_obj_set_size(btn, 100, 50);
+    esp_lv_adapter_unlock();
+}
+```
+
+### Recommended sdkconfig settings
+
+<Tabs>
+  <Tab title="Core LVGL">
+    ```ini
+    CONFIG_FREERTOS_HZ=1000
+    CONFIG_LV_OS_FREERTOS=y
+    CONFIG_LV_USE_CLIB_MALLOC=y
+    CONFIG_LV_USE_CLIB_STRING=y
+    CONFIG_LV_USE_CLIB_SPRINTF=y
+    CONFIG_LV_DEF_REFR_PERIOD=15
+    CONFIG_LV_OBJ_STYLE_CACHE=y
+    ```
+  </Tab>
+  <Tab title="Multi-core (ESP32-S3/P4)">
+    ```ini
+    CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+    ```
+  </Tab>
+  <Tab title="PSRAM (ESP32-S3)">
+    ```ini
+    CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+    CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+    CONFIG_ESP32S3_DATA_CACHE_64KB=y
+    CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+    ```
+  </Tab>
+  <Tab title="PSRAM (ESP32-P4)">
+    ```ini
+    CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+    CONFIG_CACHE_L2_CACHE_256KB=y
+    CONFIG_CACHE_L2_CACHE_LINE_128B=y
+    ```
+  </Tab>
+</Tabs>
+
+### Kconfig options
+
+| Option | Description |
+|--------|-------------|
+| `ESP_LV_ADAPTER_ENABLE_FS` | Enable filesystem bridge (`esp_lv_fs`) |
+| `ESP_LV_ADAPTER_ENABLE_DECODER` | Enable image decoder (`esp_lv_decoder`) |
+| `ESP_LV_ADAPTER_ENABLE_FREETYPE` | Enable FreeType vector font support |
+| `ESP_LV_ADAPTER_ENABLE_FPS_STATS` | Enable FPS monitoring APIs |
+| `ESP_LV_ADAPTER_ENABLE_BUTTON` | Enable navigation button input support |
+| `ESP_LV_ADAPTER_ENABLE_KNOB` | Enable rotary encoder input support |
+
+### Deinitialization
+
+```c
+esp_lv_adapter_unregister_touch(touch);
+esp_lv_adapter_unregister_display(disp);
+esp_lv_adapter_fs_unmount(fs_handle);
+mmap_assets_del(assets);
+esp_lv_adapter_deinit();
+```
+
+---
+
+## esp_mmap_assets
+
+`esp_mmap_assets` packages image and font files into a flash partition and generates a C header with an enum of file IDs for compile-time access. At runtime the component maps the partition for zero-copy memory access.
+
+### Adding to your project
+
+```bash
+idf.py add-dependency "espressif/esp_mmap_assets"
+```
+
+### CMake partition definition
+
+```cmake
+spiffs_create_partition_assets(
+    my_assets_partition    # partition label in partitions.csv
+    my_assets_folder       # source folder with images / fonts
+    FLASH_IN_PROJECT       # auto-flash with idf.py flash
+    MMAP_FILE_SUPPORT_FORMAT ".jpg,.png,.ttf"
+)
+```
+
+### Supported image format options
+
+| CMake option | Result |
+|--------------|--------|
+| `MMAP_SUPPORT_SJPG` | Convert JPG to split-JPEG for reduced RAM decoding |
+| `MMAP_SUPPORT_SPNG` | Convert PNG to split-PNG |
+| `MMAP_SUPPORT_QOI` | Convert to QOI lossless format |
+| `MMAP_SUPPORT_SQOI` | Convert to split-QOI (requires `MMAP_SUPPORT_QOI`) |
+| `MMAP_SUPPORT_RAW` | Convert to LVGL binary image format |
+| `MMAP_SPLIT_HEIGHT n` | Row count per split chunk (for SJPG/SPNG/SQOI) |
+
+### Runtime usage
+
+```c
+#include "mmap_generate_my_assets_partition.h"
+
+mmap_assets_handle_t asset_handle;
+const mmap_assets_config_t config = {
+    .partition_label = "my_assets_partition",
+    .max_files  = MMAP_MY_ASSETS_FOLDER_FILES,
+    .checksum   = MMAP_MY_ASSETS_FOLDER_CHECKSUM,
+    .flags = { .mmap_enable = true },
+};
+ESP_ERROR_CHECK(mmap_assets_new(&config, &asset_handle));
+
+// Access individual files
+const void *ptr  = mmap_assets_get_mem(asset_handle, MMAP_JPG_JPG);
+int         size = mmap_assets_get_size(asset_handle, MMAP_JPG_JPG);
+int         w    = mmap_assets_get_width(asset_handle, MMAP_JPG_JPG);
+int         h    = mmap_assets_get_height(asset_handle, MMAP_JPG_JPG);
+```
+
+---
+
+## esp_lv_fs
+
+`esp_lv_fs` mounts a memory-mapped asset partition as an LVGL virtual filesystem drive (letter A–Z). This enables LVGL widgets to load assets using file paths such as `"A:image.png"`.
+
+### Usage
+
+```c
+#include "esp_lv_fs.h"
+#include "esp_mmap_assets.h"
+
+// Create mmap handle first (see esp_mmap_assets above)
+mmap_assets_handle_t mmap_handle;
+const mmap_assets_config_t asset_cfg = {
+    .partition_label = "assets_A",
+    .max_files = MMAP_DRIVE_A_FILES,
+    .checksum  = MMAP_DRIVE_A_CHECKSUM,
+    .flags = { .mmap_enable = true },
+};
+mmap_assets_new(&asset_cfg, &mmap_handle);
+
+// Mount as LVGL drive letter 'A'
+esp_lv_fs_handle_t fs_handle;
+const fs_cfg_t fs_cfg = {
+    .fs_letter = 'A',
+    .fs_assets = mmap_handle,
+    .fs_nums   = MMAP_DRIVE_A_FILES,
+};
+esp_lv_fs_desc_init(&fs_cfg, &fs_handle);
+
+// Use in LVGL
+lv_obj_t *img = lv_img_create(lv_scr_act());
+lv_img_set_src(img, "A:my_image.png");
+```
+
+---
+
+## esp_lv_decoder
+
+`esp_lv_decoder` registers image decoders with LVGL for JPG, PNG, and QOI, and their split variants (SJPG, SPNG, SQOI). Standard formats load the entire uncompressed image into RAM; split formats decode one row chunk at a time, reducing peak RAM usage at the cost of no rotation or zoom support.
+
+**Supported formats:** JPG, SJPG, PNG, SPNG, QOI, SQOI, and hardware-accelerated JPEG/PJPG when the chip supports it.
+
+### Usage
+
+```c
+#include "esp_lv_decoder.h"
+
+// Call after LVGL is initialized
+esp_lv_decoder_handle_t decoder_handle = NULL;
+esp_lv_decoder_init(&decoder_handle);
+```
+
+### Converting assets during build
+
+<Tabs>
+  <Tab title="SJPG">
+    ```cmake
+    spiffs_create_partition_assets(
+        my_partition my_folder FLASH_IN_PROJECT
+        MMAP_FILE_SUPPORT_FORMAT ".jpg"
+        MMAP_SUPPORT_SJPG
+        MMAP_SPLIT_HEIGHT 16
+    )
+    ```
+  </Tab>
+  <Tab title="SPNG">
+    ```cmake
+    spiffs_create_partition_assets(
+        my_partition my_folder FLASH_IN_PROJECT
+        MMAP_FILE_SUPPORT_FORMAT ".png"
+        MMAP_SUPPORT_SPNG
+        MMAP_SPLIT_HEIGHT 16
+    )
+    ```
+  </Tab>
+  <Tab title="QOI / SQOI">
+    ```cmake
+    spiffs_create_partition_assets(
+        my_partition my_folder FLASH_IN_PROJECT
+        MMAP_FILE_SUPPORT_FORMAT ".jpg,.png"
+        MMAP_SUPPORT_QOI
+        MMAP_SUPPORT_SQOI
+        MMAP_SPLIT_HEIGHT 16
+    )
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## AVI player
+
+The `avi_player` component parses AVI container files and delivers audio and video frames to the application through callbacks at the correct frame rate.
+
+**Supported video streams:** MJPEG, H.264  
+**Supported audio streams:** PCM
+
+### Adding to your project
+
+```bash
+idf.py add-dependency "espressif/avi_player=*"
+```
+
+### Overview
+
+The component can parse AVI data from a filesystem path or from a memory buffer. The application supplies callbacks that receive decoded frames, making it easy to route video to an LCD via `esp_lcd_panel_draw_bitmap()` and audio to an I2S peripheral.
+
+---
+
+## esp_lv_lottie_player
+
+`esp_lv_lottie_player` plays Lottie JSON vector animations inside LVGL using the ThorVG rendering engine. It creates an LVGL canvas widget that ThorVG renders into.
+
+**Dependencies:** LVGL ≥ 8, < 10; ThorVG (`espressif/thorvg` 0.15.*); ESP-IDF ≥ 4.4.
+
+### Adding to your project
+
+```bash
+idf.py add-dependency "espressif/esp_lv_lottie_player"
+```
+
+### Usage
+
+```c
+#include "esp_lv_lottie.h"
+
+// Create animation object
+lv_obj_t *lottie = lv_lottie_create(lv_scr_act());
+
+// Allocate internal ARGB8888 render buffer and set size
+lv_lottie_set_size(lottie, 200, 200);
+
+// Load from LVGL filesystem
+lv_lottie_set_src(lottie, "A:animation.json");
+
+// Or load from a raw JSON buffer in memory
+lv_lottie_src_dsc_t src_dsc = {
+    .data      = json_data,
+    .data_size = json_size,
+};
+lv_lottie_set_src(lottie, &src_dsc);
+
+lv_lottie_set_loop_enabled(lottie, true);
+lv_lottie_play(lottie);
+```
+
+### Playback API
+
+| Function | Description |
+|----------|-------------|
+| `lv_lottie_play()` | Start or resume playback |
+| `lv_lottie_pause()` | Pause at current frame |
+| `lv_lottie_stop()` | Stop and reset to segment start |
+| `lv_lottie_restart()` | Restart from segment start |
+| `lv_lottie_set_segment()` | Restrict playback to a frame range |
+| `lv_lottie_set_loop_count()` | Set loop count (-1 for infinite) |
+| `lv_lottie_set_frame_delay()` | Override inter-frame delay |
+| `lv_lottie_get_total_frames()` | Query total frame count |
+
+<Warning>
+Lottie files with embedded PNG/JPEG image sequences are not recommended. ThorVG preloads all frames simultaneously, which can exceed available PSRAM (e.g., 78 frames at 500×417 ≈ 62 MB). Use pure vector animations.
+</Warning>
+
+<Note>
+Increase the LVGL task stack to at least 32 KB to avoid stack overflow during Lottie loading and rendering. On LVGL v8 set `CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768`; on v9 set `CONFIG_LV_DRAW_THREAD_STACK_SIZE=32768`.
+</Note>
+
+---
+
+## esp_lv_eaf_player
+
+`esp_lv_eaf_player` plays EAF (Emote Animation Format) compressed animation sequences in LVGL. EAF supports RLE, Huffman, and JPEG compression, targeting minimal memory footprint on embedded displays.
+
+### Adding to your project
+
+```bash
+idf.py add-dependency "espressif/esp_lv_eaf_player"
+```
+
+### Converting animations to EAF
+
+Use the online tool at [https://esp32-gif.espressif.com/](https://esp32-gif.espressif.com/) to convert GIF or other animation formats to EAF.
+
+### Usage
+
+```c
+#include "lv_eaf.h"
+
+// From embedded C array
+lv_obj_t *eaf_anim = lv_eaf_create(lv_screen_active());
+extern const lv_image_dsc_t my_animation_eaf;
+lv_eaf_set_src(eaf_anim, &my_animation_eaf);
+lv_eaf_set_loop_count(eaf_anim, -1);   // infinite loop
+lv_eaf_set_frame_delay(eaf_anim, 50);  // 50 ms per frame
+lv_obj_center(eaf_anim);
+
+// Or load from LVGL filesystem
+lv_eaf_set_src(eaf_anim, "E:/animations/intro.eaf");
+```
+
+### Playback API
+
+| Function | Description |
+|----------|-------------|
+| `lv_eaf_restart()` | Restart from the first frame |
+| `lv_eaf_pause()` | Pause playback |
+| `lv_eaf_resume()` | Resume after pause |
+| `lv_eaf_set_loop_count()` | Set loop count (-1 for infinite) |
+| `lv_eaf_set_loop_enabled()` | Enable or disable looping |
+| `lv_eaf_set_frame_delay()` | Set frame delay in milliseconds |
+| `lv_eaf_get_total_frames()` | Get total frame count |
+| `lv_eaf_get_current_frame()` | Get current frame index |
+| `lv_eaf_is_loaded()` | Check if animation is loaded |

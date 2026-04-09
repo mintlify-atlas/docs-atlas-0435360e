@@ -1,0 +1,371 @@
+---
+title: Networking
+description: Networking solutions for ESP-IoT-Solution including 4G/LTE modem connectivity via USB (PPP, RNDIS, ECM), the modem AT command parser component, and the iot_eth Ethernet abstraction layer.
+keywords: [4G, LTE, modem, PPP, RNDIS, ECM, Ethernet, iot_eth, AT commands, networking, ESP32-S3, ESP32-P4]
+---
+
+ESP-IoT-Solution provides networking components that connect ESP chips to the internet via 4G cellular modems, USB-Ethernet adapters, and custom Ethernet drivers. The components are built on top of the ESP-IDF LwIP network stack and the USB host driver.
+
+<CardGroup cols={2}>
+  <Card title="4G/LTE via USB PPP" icon="signal" href="#4g-lte-via-usb-ppp">
+    Connect Cat.1/Cat.4 4G modules using the PPP dialing protocol over USB CDC.
+  </Card>
+  <Card title="4G/LTE via USB RNDIS" icon="network-wired" href="#4g-lte-via-usb-rndis">
+    Use RNDIS to get Ethernet-style network access from 4G modules and USB dongles.
+  </Card>
+  <Card title="4G/LTE via USB ECM" icon="ethernet" href="#4g-lte-via-usb-ecm">
+    Use Ethernet Control Model (ECM) for network access from 4G modules.
+  </Card>
+  <Card title="Modem AT Parser" icon="terminal" href="#modem-at-command-parser">
+    Generic AT command parser for 4G modem communication over any serial interface.
+  </Card>
+  <Card title="iot_eth Ethernet layer" icon="server" href="#iot_eth-ethernet-abstraction">
+    Hardware-agnostic Ethernet abstraction supporting RNDIS, ECM, and PPP backends.
+  </Card>
+</CardGroup>
+
+---
+
+## 4G/LTE via USB PPP
+
+`iot_usbh_modem` implements the complete PPP dialing workflow on the ESP USB host. It connects to 4G Cat.1 or Cat.4 modules through a USB CDC interface (or vendor-specific interface) and establishes a PPP link for internet access. The module can also share the connection as a Wi-Fi SoftAP hotspot.
+
+### Features
+
+- Fast startup with hot-plug support
+- Modem + AT command dual interfaces (where the module provides a separate AT port)
+- Standard PPP protocol (supported by most 4G modules)
+- NAPT (Network Address and Port Translation) support
+- Compatible with the ESP-IDF PPP implementation
+
+### Supported modules
+
+| Module | Firmware | ESP32-S2 | ESP32-S3 | ESP32-P4 |
+|---|---|---|---|---|
+| ML302 | ML302-CNLM_MBRH0S00 | Yes | Yes | Yes |
+| Air780E | AirM2M_780EVT_V2010_LTE_AT | Yes | Yes | Yes |
+| EC600N-CN | EC600NCNLDR03A03M16_OCP | Yes | Yes | Yes |
+| EC20 | EC20CEFHLGR06A07M1G | Yes | Yes | Yes |
+| YM310 | YM310.X09S_AT.A60_R2.1.3.241121 | Yes | Yes | Yes |
+| A7600C1 | A7600M6_V8.18.1 | Yes | Yes | Yes |
+| A7670E | A7670M7_V1.11.1 | Yes | Yes | Yes |
+| SIM7080G | 1951B17SIM7080 | Yes | Yes | Yes |
+| LE270-CN | 12007.6005.00.02.03.04 | Yes | Yes | Yes |
+| MC610-EU | 16000.1000.00.97.20.10 | Yes | Yes | Yes |
+
+### Adding a new module
+
+<Steps>
+  <Step title="Verify PPP support">
+    Confirm the module supports USB PPP dialing. Consult the vendor if the firmware variant is unclear.
+  </Step>
+  <Step title="Check the SIM card">
+    Confirm the SIM card is activated and data access is enabled.
+  </Step>
+  <Step title="Identify USB descriptors">
+    Use a USB descriptor tool (e.g., `usbtreeview`) to find the module's `Vendor ID`, `Product ID`, Modem interface number, and optional AT command interface number.
+  </Step>
+  <Step title="Populate usbh_modem_config_t">
+    Fill in the descriptor information in the `usbh_modem_config_t` structure and pass it to the driver initialization function.
+  </Step>
+</Steps>
+
+<Note>
+Some modules expose the PPP interface as a Vendor Specific Class interface (`bInterfaceClass = 0xFF`) rather than a standard CDC interface. The driver supports several such modules.
+</Note>
+
+<Note>
+Some modules automatically exit data mode via PPP frames without requiring the `+++` escape sequence. In this case, disable the `MODEM_EXIT_PPP_WITH_AT_CMD` Kconfig option.
+</Note>
+
+**Example:** `usb/host/usb_cdc_4g_module`
+
+---
+
+## 4G/LTE via USB RNDIS
+
+`iot_usbh_rndis` is a host driver for the RNDIS (Remote NDIS) protocol. RNDIS encapsulates TCP/IP packets in USB transfers, providing Ethernet-style connectivity from 4G modules and USB-to-Ethernet adapters.
+
+### Communication flow
+
+<Steps>
+  <Step title="Initialize">
+    Send `REMOTE_NDIS_INITIALIZE_MSG` on the control endpoint. The device responds with `REMOTE_NDIS_INITIALIZE_CMPLT_MSG`.
+  </Step>
+  <Step title="Query OIDs">
+    Send `REMOTE_NDIS_QUERY_MSG` to retrieve Object Identifiers: MAC address, link status, and link speed.
+  </Step>
+  <Step title="DHCP">
+    Initiate a DHCP request to obtain an IP address from the module.
+  </Step>
+</Steps>
+
+### Supported modules (RNDIS mode)
+
+| Module | ESP32-S2 | ESP32-S3 | ESP32-P4 | USB mode switch command |
+|---|---|---|---|---|
+| ML307R | Yes | Yes | Yes | `AT+MDIALUPCFG="mode",0` (0=RNDIS) |
+| ML302 | Yes | Yes | Yes | `AT+SYSNV=1,"usbmode",3` (3=RNDIS) |
+| AIR720 SL | Yes | Yes | Yes | `AT+SETUSB=1` (1=RNDIS) |
+| EC800E-CN | Yes | Yes | Yes | `AT+QCFG="usbnet",3` (3=RNDIS) |
+| EC801E-CN | Yes | Yes | Yes | `AT+QCFG="usbnet",3` |
+| YM310 | Yes | Yes | Yes | `AT+ECPCFG="usbNet",0` (0=RNDIS) |
+| MC610-EU | Yes | Yes | Yes | `AT+GTUSBMODE=33`; then `AT+GTRNDIS=1,1` |
+| Lierda NT26 | Yes | Yes | Yes | `AT+ECPCFG="usbNet",0`; then `AT+ECNETDEVCTL=3,1` |
+
+### Throughput (ESP32-S3 + 4G dongle + SoftAP)
+
+| Direction | Throughput |
+|---|---|
+| Uplink | 5.8 Mbps |
+| Downlink | 7.9 Mbps |
+
+**Example:** `usb/host/usb_rndis_4g_module`
+
+---
+
+## 4G/LTE via USB ECM
+
+`iot_usbh_ecm` is a host driver for the ECM (Ethernet Control Model) protocol. ECM uses the CDC class interface to exchange Ethernet frames between the 4G module and the ESP host.
+
+After installation, the driver scans interface descriptors of newly attached USB devices and automatically finds the ECM interface (`bInterfaceClass = 0x02`, `bInterfaceSubClass = 0x06`). It parses the ECM functional descriptor to obtain the MAC address (via `iMACAddress` string index) and maximum Ethernet frame size (typically 1514 bytes via `wMaxSegmentSize`).
+
+### Supported modules (ECM mode)
+
+| Module | ESP32-S2 | ESP32-S3 | ESP32-P4 | USB mode switch command |
+|---|---|---|---|---|
+| ML302 | Yes | Yes | Yes | `AT+SYSNV=1,"usbmode",5` (5=ECM) |
+| EC800E-CN | Yes | Yes | Yes | `AT+QCFG="usbnet",1` (1=ECM) |
+| EC801E-CN | Yes | Yes | Yes | `AT+QCFG="usbnet",1` |
+| YM310 | Yes | Yes | Yes | `AT+ECPCFG="usbNet",1` (1=ECM) |
+| MC610-EU | Yes | Yes | Yes | `AT+GTUSBMODE=32` |
+| Lierda NT26 | Yes | Yes | Yes | `AT+ECPCFG="usbNet",1` |
+
+**Tested USB-Ethernet adapters:** CH397A, RTL8152B, NX7202D (all support ESP32-S2/S3/P4)
+
+<Warning>
+Some 4G modules expose ECM endpoints with an MPS larger than 64 bytes, which exceeds the Full-Speed USB limit on ESP32-S2/S3. These modules print `EP MPS (512) exceeds supported limit (408)`. Use RNDIS mode or ESP32-P4 (High-Speed) instead.
+</Warning>
+
+**Example:** `usb/host/usb_ecm_4g_module`
+
+---
+
+## Modem AT command parser
+
+`modem_at` is a generic AT command parser component for communicating with 4G modules over any serial interface (UART, USB CDC, etc.). It handles command formatting, response parsing, timeout control, and line-by-line handler callbacks.
+
+### Features
+
+- Standard AT command sending with `\r\n` formatting
+- Built-in configurable timeout control
+- Extensible per-command response handler callbacks
+- Thread-safe with FreeRTOS synchronization primitives
+
+### Usage
+
+<Steps>
+  <Step title="Define a send function">
+    ```c
+    static esp_err_t your_send_function(const char *cmd, size_t length, void *usr_data)
+    {
+        // send the command bytes over your interface (UART, USB CDC, etc.)
+        return ESP_OK;
+    }
+    ```
+  </Step>
+  <Step title="Create the parser">
+    ```c
+    at_handle_t handle = NULL;
+
+    modem_at_config_t cfg = {
+        .send_buffer_length = 256,
+        .recv_buffer_length = 256,
+        .io = {
+            .send_cmd = your_send_function,
+            .usr_data = your_context,
+        },
+    };
+    handle = modem_at_parser_create(&cfg);
+    ```
+  </Step>
+  <Step title="Start the parser and send commands">
+    ```c
+    modem_at_start(handle);
+
+    // Send a basic AT test command
+    modem_at_send_command(handle, "AT", 1000, NULL, NULL);
+    ```
+  </Step>
+  <Step title="Write received data from your interface">
+    When bytes arrive from the module, write them into the parser buffer:
+
+    ```c
+    // In your receive interrupt or task:
+    char *buf;
+    size_t remain;
+    modem_at_get_response_buffer(handle, &buf, &remain);
+    size_t read_len = your_interface_read(buf, remain);
+    modem_at_write_response_done(handle, read_len);
+    ```
+  </Step>
+  <Step title="Destroy when done">
+    ```c
+    modem_at_stop(handle);
+    modem_at_parser_destroy(handle);
+    ```
+  </Step>
+</Steps>
+
+### API reference
+
+| Function | Description |
+|---|---|
+| `modem_at_parser_create(cfg)` | Create and initialize an AT parser instance |
+| `modem_at_parser_destroy(handle)` | Clean up and free the parser (must be stopped first) |
+| `modem_at_start(handle)` | Allow commands to be processed |
+| `modem_at_stop(handle)` | Prevent new commands from being processed |
+| `modem_at_send_command(handle, cmd, timeout_ms, handle_line, ctx)` | Send an AT command and wait for a response |
+| `modem_at_get_response_buffer(handle, buf, remain_len)` | Get the receive buffer write pointer and remaining capacity |
+| `modem_at_write_response_done(handle, write_len)` | Mark received data as ready for parsing |
+| `modem_at_get_current_cmd(handle)` | Get the command string currently being processed |
+| `modem_at_get_handle_line_ctx(handle)` | Get the context pointer for the current line handler |
+
+---
+
+## iot_eth Ethernet abstraction
+
+`iot_eth` provides a hardware-agnostic Ethernet abstraction layer. It decouples the network stack (LwIP) from the underlying transport (RNDIS, ECM, PPP, or a custom driver) through a driver interface. A default LwIP netif glue is included; custom network stacks are also supported.
+
+### Architecture
+
+```
+  [LwIP / Custom Stack]
+         |
+   [iot_eth layer]       ← iot_eth_install / iot_eth_start / iot_eth_transmit
+         |
+  [iot_eth_driver_t]     ← user-implemented driver callbacks
+         |
+  [Physical transport]   ← USB RNDIS, USB ECM, USB PPP, etc.
+```
+
+### Implementing a driver
+
+A driver is a struct of function pointers conforming to `iot_eth_driver_t`:
+
+```c
+static esp_err_t drv_init(iot_eth_driver_t *driver)
+{
+    // initialize your hardware / transport
+    return ESP_OK;
+}
+
+static esp_err_t drv_set_mediator(iot_eth_driver_t *driver,
+                                  iot_eth_mediator_t *mediator)
+{
+    net_ctx_t *net = __containerof(driver, net_ctx_t, base);
+    net->mediator = mediator;
+    return ESP_OK;
+}
+
+static esp_err_t drv_transmit(iot_eth_driver_t *driver,
+                               uint8_t *buffer, size_t buflen)
+{
+    // send an Ethernet frame over your transport
+    return ESP_OK;
+}
+
+static esp_err_t drv_get_addr(iot_eth_driver_t *driver, uint8_t *mac)
+{
+    // copy the 6-byte MAC address into mac
+    return ESP_OK;
+}
+
+static esp_err_t drv_deinit(iot_eth_driver_t *driver)
+{
+    free(driver);
+    return ESP_OK;
+}
+
+static iot_eth_driver_t *new_eth_driver(void)
+{
+    net_ctx_t *net = calloc(1, sizeof(net_ctx_t));
+    net->base.name         = "my_eth";
+    net->base.init         = drv_init;
+    net->base.deinit       = drv_deinit;
+    net->base.set_mediator = drv_set_mediator;
+    net->base.get_addr     = drv_get_addr;
+    net->base.transmit     = drv_transmit;
+    return &net->base;
+}
+```
+
+### Install, start, and use
+
+```c
+iot_eth_driver_t *driver = new_eth_driver();
+
+iot_eth_config_t eth_cfg = {
+    .driver = driver,
+    .stack_input = NULL,   // NULL = use default LwIP glue
+};
+
+iot_eth_handle_t eth_handle = NULL;
+ESP_ERROR_CHECK(iot_eth_install(&eth_cfg, &eth_handle));
+ESP_ERROR_CHECK(iot_eth_start(eth_handle));
+```
+
+### Sending and receiving
+
+```c
+// Send a raw Ethernet frame
+ESP_ERROR_CHECK(iot_eth_transmit(eth_handle, frame_data, frame_len));
+
+// Get the MAC address of the network interface
+uint8_t mac[6];
+ESP_ERROR_CHECK(iot_eth_get_addr(eth_handle, mac));
+```
+
+For custom network stacks, provide a `stack_input` callback in `iot_eth_config_t`. This callback is invoked whenever an Ethernet frame arrives from the driver:
+
+```c
+static esp_err_t my_stack_input(iot_eth_handle_t handle,
+                                uint8_t *data, size_t len,
+                                void *user_data)
+{
+    // process the received Ethernet frame
+    return ESP_OK;
+}
+```
+
+You can also update the input path at runtime:
+
+```c
+iot_eth_update_input_path(eth_handle, my_stack_input, user_data);
+```
+
+### iot_eth events
+
+Subscribe to `IOT_ETH_EVENT` on the default event loop to track network state:
+
+| Event | Description |
+|---|---|
+| `IOT_ETH_EVENT_START` | Driver started |
+| `IOT_ETH_EVENT_STOP` | Driver stopped |
+| `IOT_ETH_EVENT_CONNECTED` | Valid link established |
+| `IOT_ETH_EVENT_DISCONNECTED` | Link lost |
+
+### Supported backends
+
+| Backend | Component |
+|---|---|
+| USB RNDIS | `iot_usbh_rndis` |
+| USB ECM | `iot_usbh_ecm` |
+| USB PPP | `iot_usbh_modem` |
+
+### Teardown
+
+```c
+ESP_ERROR_CHECK(iot_eth_stop(eth_handle));
+ESP_ERROR_CHECK(iot_eth_uninstall(eth_handle));
+```

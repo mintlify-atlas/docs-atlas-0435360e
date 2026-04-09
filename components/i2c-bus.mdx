@@ -1,0 +1,460 @@
+---
+title: "I2C bus"
+description: "Thread-safe I2C bus abstraction for ESP-IDF that supports multiple devices on a single bus with per-device clock speed configuration."
+---
+
+The `i2c_bus` component wraps the ESP-IDF I2C driver with a bus/device ownership model. A single bus instance manages the physical I2C port, and multiple device handles can coexist on it—each with its own address and optional clock speed. The bus automatically switches clock speed before each transfer when dynamic configuration is enabled.
+
+## Installation
+
+<Steps>
+  <Step title="Add the dependency">
+    ```bash
+    idf.py add-dependency "espressif/i2c_bus"
+    ```
+  </Step>
+  <Step title="Include the header">
+    ```c
+    #include "i2c_bus.h"
+    ```
+  </Step>
+  <Step title="(Optional) Enable software I2C or dynamic config">
+    Open `menuconfig` and navigate to **Component config → Bus Options → I2C Bus Options** to enable software I2C support or dynamic per-device configuration.
+  </Step>
+</Steps>
+
+## Constants and types
+
+| Symbol | Value | Description |
+|---|---|---|
+| `NULL_I2C_MEM_ADDR` | `0xFF` | Pass as `mem_address` when the device has no internal register address (8-bit). |
+| `NULL_I2C_MEM_16BIT_ADDR` | `0xFFFF` | Pass as `mem_address` when the device has no internal register address (16-bit). |
+| `NULL_I2C_DEV_ADDR` | `0xFF` | Returned by `i2c_bus_device_get_address` when the handle is invalid. |
+| `i2c_bus_handle_t` | `void *` | Opaque handle to an I2C bus instance. |
+| `i2c_bus_device_handle_t` | `void *` | Opaque handle to an I2C device on the bus. |
+
+## Structs
+
+### `i2c_config_t`
+
+Bus-level configuration. Fields come from the ESP-IDF `driver/i2c.h` or `driver/i2c_master.h` depending on your IDF version.
+
+<AccordionGroup>
+  <Accordion title="i2c_config_t fields">
+    | Field | Type | Description |
+    |---|---|---|
+    | `mode` | `i2c_mode_t` | I2C operating mode. Use `I2C_MODE_MASTER` for master mode. |
+    | `sda_io_num` | `int` | GPIO number for the SDA signal. |
+    | `scl_io_num` | `int` | GPIO number for the SCL signal. |
+    | `sda_pullup_en` | `bool` | Enable internal pull-up on the SDA pin. |
+    | `scl_pullup_en` | `bool` | Enable internal pull-up on the SCL signal. |
+    | `master.clk_speed` | `uint32_t` | Default bus clock frequency in Hz. Maximum 1 MHz. |
+    | `clk_flags` | `uint32_t` | Bitwise flags for clock source selection (`I2C_SCLK_SRC_FLAG_*`). |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## API reference
+
+### Bus lifecycle
+
+#### `i2c_bus_create`
+
+```c
+i2c_bus_handle_t i2c_bus_create(i2c_port_t port, const i2c_config_t *conf);
+```
+
+Creates an I2C bus instance for the given port. Each port operates as a singleton—calling this function a second time for the same port overrides the previous configuration.
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `port` | `i2c_port_t` | I2C hardware port number. Pass a value from `i2c_sw_port_t` (e.g. `I2C_NUM_SW_0`) to use software I2C when `I2C_BUS_SUPPORT_SOFTWARE` is enabled. |
+    | `conf` | `const i2c_config_t *` | Pointer to bus configuration. Must not be NULL. |
+  </Accordion>
+  <Accordion title="Returns">
+    An `i2c_bus_handle_t` on success, or `NULL` if creation failed.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+#### `i2c_bus_delete`
+
+```c
+esp_err_t i2c_bus_delete(i2c_bus_handle_t *p_bus_handle);
+```
+
+Releases all resources held by the bus. The bus cannot be deleted while devices are still attached; delete all devices first.
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `p_bus_handle` | `i2c_bus_handle_t *` | Pointer to the bus handle. Set to `NULL` on success. |
+  </Accordion>
+  <Accordion title="Returns">
+    | Value | Meaning |
+    |---|---|
+    | `ESP_OK` | Bus deleted successfully. |
+    | `ESP_FAIL` | Deletion failed (e.g. devices still attached). |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+### Device lifecycle
+
+#### `i2c_bus_device_create`
+
+```c
+i2c_bus_device_handle_t i2c_bus_device_create(i2c_bus_handle_t bus_handle, uint8_t dev_addr, uint32_t clk_speed);
+```
+
+Registers a device on the bus. Enable **dynamic configuration** in `menuconfig` to run multiple devices at different clock speeds on the same bus.
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `bus_handle` | `i2c_bus_handle_t` | Handle to the parent bus. |
+    | `dev_addr` | `uint8_t` | 7-bit I2C address of the device. |
+    | `clk_speed` | `uint32_t` | Clock frequency in Hz for this device. Pass `0` to use the current bus frequency. |
+  </Accordion>
+  <Accordion title="Returns">
+    An `i2c_bus_device_handle_t` on success, or `NULL` if creation failed.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+#### `i2c_bus_device_delete`
+
+```c
+esp_err_t i2c_bus_device_delete(i2c_bus_device_handle_t *p_dev_handle);
+```
+
+Removes a device from the bus and frees its resources. Must be paired with `i2c_bus_device_create`.
+
+<AccordionGroup>
+  <Accordion title="Parameters">
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `p_dev_handle` | `i2c_bus_device_handle_t *` | Pointer to the device handle. Set to `NULL` on success. |
+  </Accordion>
+  <Accordion title="Returns">
+    | Value | Meaning |
+    |---|---|
+    | `ESP_OK` | Device deleted successfully. |
+    | `ESP_FAIL` | Deletion failed. |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+### Read functions
+
+All read functions share this return value table:
+
+| Value | Meaning |
+|---|---|
+| `ESP_OK` | Success. |
+| `ESP_ERR_INVALID_ARG` | Parameter error. |
+| `ESP_FAIL` | Slave did not ACK the transfer. |
+| `ESP_ERR_INVALID_STATE` | I2C driver not installed or not in master mode. |
+| `ESP_ERR_TIMEOUT` | Bus busy; operation timed out. |
+
+#### `i2c_bus_read_byte`
+
+```c
+esp_err_t i2c_bus_read_byte(i2c_bus_device_handle_t dev_handle, uint8_t mem_address, uint8_t *data);
+```
+
+Reads a single byte from an 8-bit register/memory address.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `i2c_bus_device_handle_t` | Device handle. |
+| `mem_address` | `uint8_t` | Internal register address. Use `NULL_I2C_MEM_ADDR` if the device has no register address. |
+| `data` | `uint8_t *` | Pointer to a buffer that receives the byte. |
+
+---
+
+#### `i2c_bus_read_bytes`
+
+```c
+esp_err_t i2c_bus_read_bytes(i2c_bus_device_handle_t dev_handle, uint8_t mem_address, size_t data_len, uint8_t *data);
+```
+
+Reads multiple bytes starting from an 8-bit register/memory address. For 16-bit addresses use `i2c_bus_read_reg16`.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `i2c_bus_device_handle_t` | Device handle. |
+| `mem_address` | `uint8_t` | Internal register address. Use `NULL_I2C_MEM_ADDR` if not applicable. |
+| `data_len` | `size_t` | Number of bytes to read. |
+| `data` | `uint8_t *` | Pointer to a buffer that receives the data. |
+
+---
+
+#### `i2c_bus_read_bit`
+
+```c
+esp_err_t i2c_bus_read_bit(i2c_bus_device_handle_t dev_handle, uint8_t mem_address, uint8_t bit_num, uint8_t *data);
+```
+
+Reads a single bit from a byte at an 8-bit register address. `*data == 0` means bit is 0; `*data != 0` means bit is 1.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `i2c_bus_device_handle_t` | Device handle. |
+| `mem_address` | `uint8_t` | Internal register address. |
+| `bit_num` | `uint8_t` | Bit position to read, 0 (LSB) – 7 (MSB). |
+| `data` | `uint8_t *` | Pointer to a buffer that receives the bit value. |
+
+---
+
+#### `i2c_bus_read_bits`
+
+```c
+esp_err_t i2c_bus_read_bits(i2c_bus_device_handle_t dev_handle, uint8_t mem_address, uint8_t bit_start, uint8_t length, uint8_t *data);
+```
+
+Reads a contiguous range of bits from a byte at an 8-bit register address.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `i2c_bus_device_handle_t` | Device handle. |
+| `mem_address` | `uint8_t` | Internal register address. |
+| `bit_start` | `uint8_t` | Starting bit position, 0 – 7, MSB at 0. |
+| `length` | `uint8_t` | Number of bits to read, 1 – 8. |
+| `data` | `uint8_t *` | Pointer to a buffer that receives the bits. |
+
+---
+
+### Write functions
+
+All write functions return the same error codes as the read functions above.
+
+#### `i2c_bus_write_byte`
+
+```c
+esp_err_t i2c_bus_write_byte(i2c_bus_device_handle_t dev_handle, uint8_t mem_address, uint8_t data);
+```
+
+Writes a single byte to an 8-bit register/memory address.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `i2c_bus_device_handle_t` | Device handle. |
+| `mem_address` | `uint8_t` | Internal register address. Use `NULL_I2C_MEM_ADDR` if not applicable. |
+| `data` | `uint8_t` | The byte to write. |
+
+---
+
+#### `i2c_bus_write_bytes`
+
+```c
+esp_err_t i2c_bus_write_bytes(i2c_bus_device_handle_t dev_handle, uint8_t mem_address, size_t data_len, const uint8_t *data);
+```
+
+Writes multiple bytes starting at an 8-bit register/memory address. For 16-bit addresses use `i2c_bus_write_reg16`.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `i2c_bus_device_handle_t` | Device handle. |
+| `mem_address` | `uint8_t` | Internal register address. Use `NULL_I2C_MEM_ADDR` if not applicable. |
+| `data_len` | `size_t` | Number of bytes to write. |
+| `data` | `const uint8_t *` | Pointer to the data to write. |
+
+---
+
+#### `i2c_bus_write_bit`
+
+```c
+esp_err_t i2c_bus_write_bit(i2c_bus_device_handle_t dev_handle, uint8_t mem_address, uint8_t bit_num, uint8_t data);
+```
+
+Writes a single bit in a byte at an 8-bit register address. `data == 0` clears the bit; `data != 0` sets it.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `i2c_bus_device_handle_t` | Device handle. |
+| `mem_address` | `uint8_t` | Internal register address. |
+| `bit_num` | `uint8_t` | Bit position to write, 0 (LSB) – 7 (MSB). |
+| `data` | `uint8_t` | Bit value: `0` to clear, non-zero to set. |
+
+---
+
+#### `i2c_bus_write_bits`
+
+```c
+esp_err_t i2c_bus_write_bits(i2c_bus_device_handle_t dev_handle, uint8_t mem_address, uint8_t bit_start, uint8_t length, uint8_t data);
+```
+
+Writes a contiguous range of bits into a byte at an 8-bit register address.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `i2c_bus_device_handle_t` | Device handle. |
+| `mem_address` | `uint8_t` | Internal register address. |
+| `bit_start` | `uint8_t` | Starting bit position, 0 – 7, MSB at 0. |
+| `length` | `uint8_t` | Number of bits to write, 1 – 8. |
+| `data` | `uint8_t` | The bits to write (right-aligned). |
+
+---
+
+### Low-level command interface
+
+#### `i2c_bus_cmd_begin`
+
+```c
+esp_err_t i2c_bus_cmd_begin(i2c_bus_device_handle_t dev_handle, i2c_cmd_handle_t cmd);
+```
+
+Executes a raw command sequence built with `i2c_cmd_link_create` / `i2c_master_*` helpers. Use this only when the higher-level read/write functions cannot satisfy the protocol requirements (e.g. devices that need a command phase before the data phase, or require skipping the address phase entirely).
+
+<Note>
+  If `I2C_BUS_DYNAMIC_CONFIG` is enabled, the driver is re-installed before each transfer to apply the device's clock speed. This adds a small overhead but is required for multi-device buses with differing speeds.
+</Note>
+
+| Parameter | Type | Description |
+|---|---|---|
+| `dev_handle` | `i2c_bus_device_handle_t` | Device handle that provides the bus context and clock speed. |
+| `cmd` | `i2c_cmd_handle_t` | Command list handle created by `i2c_cmd_link_create`. |
+
+Returns the same error codes as the read/write functions.
+
+---
+
+## Utility functions
+
+<AccordionGroup>
+  <Accordion title="i2c_bus_scan">
+    ```c
+    uint8_t i2c_bus_scan(i2c_bus_handle_t bus_handle, uint8_t *buf, uint8_t num);
+    ```
+
+    Scans the bus for attached devices and returns the total count found.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `bus_handle` | `i2c_bus_handle_t` | Bus handle. |
+    | `buf` | `uint8_t *` | Buffer to store found addresses. Pass `NULL` to count only. |
+    | `num` | `uint8_t` | Maximum number of addresses to store. Ignored when `buf` is `NULL`. |
+
+    Returns the total number of devices detected on the bus.
+  </Accordion>
+  <Accordion title="i2c_bus_get_current_clk_speed">
+    ```c
+    uint32_t i2c_bus_get_current_clk_speed(i2c_bus_handle_t bus_handle);
+    ```
+
+    Returns the currently active clock speed of the bus in Hz.
+  </Accordion>
+  <Accordion title="i2c_bus_get_created_device_num">
+    ```c
+    uint8_t i2c_bus_get_created_device_num(i2c_bus_handle_t bus_handle);
+    ```
+
+    Returns the number of devices currently registered on the bus.
+  </Accordion>
+  <Accordion title="i2c_bus_device_get_address">
+    ```c
+    uint8_t i2c_bus_device_get_address(i2c_bus_device_handle_t dev_handle);
+    ```
+
+    Returns the 7-bit I2C address of the device, or `NULL_I2C_DEV_ADDR` if the handle is invalid.
+  </Accordion>
+  <Accordion title="i2c_bus_get_internal_bus_handle (IDF ≥ 5.3, new driver)">
+    ```c
+    i2c_master_bus_handle_t i2c_bus_get_internal_bus_handle(i2c_bus_handle_t bus_handle);
+    ```
+
+    Returns the underlying `i2c_master_bus_handle_t` from the ESP-IDF new I2C master driver. Available only when `I2C_BUS_BACKWARD_CONFIG` is **not** set and IDF ≥ 5.3.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Complete example
+
+The example below creates a bus on I2C port 0, attaches two devices at different speeds, performs reads and writes, then cleans up.
+
+```c
+#include "i2c_bus.h"
+#include "esp_log.h"
+
+#define I2C_MASTER_SDA_IO   21
+#define I2C_MASTER_SCL_IO   22
+#define DEVICE1_ADDR        0x28
+#define DEVICE2_ADDR        0x32
+#define DEVICE2_REG         0x10
+
+static const char *TAG = "i2c_example";
+
+void app_main(void)
+{
+    /* 1. Configure and create the bus */
+    i2c_config_t conf = {
+        .mode          = I2C_MODE_MASTER,
+        .sda_io_num    = I2C_MASTER_SDA_IO,
+        .sda_pullup_en = true,
+        .scl_io_num    = I2C_MASTER_SCL_IO,
+        .scl_pullup_en = true,
+        .master.clk_speed = 100000,  /* 100 kHz default bus speed */
+    };
+
+    i2c_bus_handle_t bus = i2c_bus_create(I2C_NUM_0, &conf);
+    if (!bus) {
+        ESP_LOGE(TAG, "Failed to create I2C bus");
+        return;
+    }
+
+    /* 2. Register devices on the bus */
+    /* device1 runs at 400 kHz (Fast Mode) */
+    i2c_bus_device_handle_t dev1 = i2c_bus_device_create(bus, DEVICE1_ADDR, 400000);
+    /* device2 inherits the bus clock speed (100 kHz) */
+    i2c_bus_device_handle_t dev2 = i2c_bus_device_create(bus, DEVICE2_ADDR, 0);
+
+    if (!dev1 || !dev2) {
+        ESP_LOGE(TAG, "Failed to create one or more I2C devices");
+        goto cleanup;
+    }
+
+    /* 3. Read two bytes from device1 (no internal register address) */
+    uint8_t rx_buf[2] = {0};
+    esp_err_t ret = i2c_bus_read_bytes(dev1, NULL_I2C_MEM_ADDR, sizeof(rx_buf), rx_buf);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "dev1 read: 0x%02X 0x%02X", rx_buf[0], rx_buf[1]);
+    }
+
+    /* 4. Write two bytes to device2 register 0x10 */
+    uint8_t tx_buf[2] = {0x01, 0x21};
+    ret = i2c_bus_write_bytes(dev2, DEVICE2_REG, sizeof(tx_buf), tx_buf);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "dev2 write OK");
+    }
+
+    /* 5. Read/write a single bit */
+    uint8_t bit_val = 0;
+    i2c_bus_read_bit(dev2, DEVICE2_REG, 3, &bit_val);   /* read bit 3 */
+    i2c_bus_write_bit(dev2, DEVICE2_REG, 3, 1);          /* set bit 3 */
+
+cleanup:
+    /* 6. Delete devices before the bus */
+    i2c_bus_device_delete(&dev1);
+    i2c_bus_device_delete(&dev2);
+    i2c_bus_delete(&bus);
+}
+```
+
+<Warning>
+  Always delete all device handles before calling `i2c_bus_delete`. Deleting the bus while devices are still attached has no effect and the bus resources will not be freed.
+</Warning>
+
+<Tip>
+  For devices with 16-bit register addresses, use `i2c_bus_read_reg16` and `i2c_bus_write_reg16` instead of the 8-bit variants. Pass `NULL_I2C_MEM_16BIT_ADDR` when there is no internal address.
+</Tip>

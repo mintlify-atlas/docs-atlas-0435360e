@@ -1,0 +1,142 @@
+---
+title: "LCD and GUI"
+description: "LCD driver overview, supported panel controllers, touch drivers, and LVGL integration for ESP-IoT-Solution."
+---
+
+ESP-IoT-Solution provides a collection of LCD panel drivers and a LVGL adapter that work on top of the ESP-IDF `esp_lcd` component. Supported bus interfaces are **SPI**, **RGB**, **QSPI**, and **I80 (Intel 8080)**.
+
+## Supported panel controllers
+
+<CardGroup cols={3}>
+  <Card title="AXS15231B" />
+  <Card title="CO5300" />
+  <Card title="EK79007" />
+  <Card title="ER88577" />
+  <Card title="GC9107" />
+  <Card title="GC9B71 / GC9D01" />
+  <Card title="HX8399" />
+  <Card title="JD9165 / JD9365" />
+  <Card title="NV3022B / NV3052" />
+  <Card title="SH8601" />
+  <Card title="SPD2010" />
+  <Card title="ST7701 / ST7703" />
+  <Card title="ST77903 (QSPI/RGB)" />
+  <Card title="ST77916 / ST77922" />
+  <Card title="ST7123" />
+</CardGroup>
+
+A USB display driver (`esp_lcd_usb_display`) and additional panel IO helpers (`esp_lcd_panel_io_additions`) are also included.
+
+## Bus interface overview
+
+| Interface | Typical use case | Max clock |
+|-----------|-----------------|-----------|
+| SPI | Small/medium displays, low pin count | ~80 MHz |
+| QSPI | Medium displays, higher bandwidth | ~80 MHz |
+| RGB (parallel) | Large displays, high refresh rate | ~21 MHz |
+| I80 (Intel 8080) | TFT panels, MCU-style bus | ~20 MHz |
+
+## LCD touch drivers
+
+Touch controller drivers are published separately under the `espressif/esp_lcd_touch_*` namespace (e.g., `esp_lcd_touch_gt911`, `esp_lcd_touch_ft5x06`). They integrate with the same `esp_lcd` panel handle pattern used by the display drivers.
+
+## LVGL integration
+
+The `esp_lvgl_port` component wraps LVGL initialisation, display flushing, touch input, and the FreeRTOS task/timer plumbing so you do not have to wire these up manually.
+
+<Note>
+`esp_lvgl_port` targets LVGL v8 and v9. Pin the version in your `idf_component.yml` to avoid breaking API changes between major releases.
+</Note>
+
+## Adding components
+
+<Steps>
+  <Step title="Add the panel driver">
+    Replace `gc9a01` with the controller that matches your hardware.
+
+    ```bash
+    idf.py add-dependency "espressif/esp_lcd_gc9a01"
+    ```
+  </Step>
+  <Step title="Add the LVGL port">
+    ```bash
+    idf.py add-dependency "espressif/esp_lvgl_port"
+    ```
+  </Step>
+  <Step title="Build">
+    ```bash
+    idf.py build
+    ```
+  </Step>
+</Steps>
+
+## Typical panel init and LVGL setup
+
+```c
+#include "esp_lcd_panel_vendor.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lvgl_port.h"
+
+/* 1. Allocate IO handle (SPI bus already initialised) */
+esp_lcd_panel_io_handle_t io_handle = NULL;
+esp_lcd_panel_io_spi_config_t io_cfg = {
+    .dc_gpio_num       = PIN_LCD_DC,
+    .cs_gpio_num       = PIN_LCD_CS,
+    .pclk_hz           = 40 * 1000 * 1000,
+    .lcd_cmd_bits      = 8,
+    .lcd_param_bits    = 8,
+    .spi_mode          = 0,
+    .trans_queue_depth = 10,
+};
+ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(spi_bus, &io_cfg, &io_handle));
+
+/* 2. Create the panel */
+esp_lcd_panel_handle_t panel_handle = NULL;
+esp_lcd_panel_dev_config_t panel_cfg = {
+    .reset_gpio_num = PIN_LCD_RST,
+    .rgb_endian     = LCD_RGB_ENDIAN_BGR,
+    .bits_per_pixel = 16,
+};
+ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(io_handle, &panel_cfg, &panel_handle));
+ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+
+/* 3. Initialise LVGL port */
+lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+
+/* 4. Add the display */
+lvgl_port_display_cfg_t disp_cfg = {
+    .io_handle     = io_handle,
+    .panel_handle  = panel_handle,
+    .buffer_size   = DISP_WIDTH * 20,
+    .double_buffer = true,
+    .hres          = DISP_WIDTH,
+    .vres          = DISP_HEIGHT,
+    .monochrome    = false,
+    .rotation = {
+        .swap_xy  = false,
+        .mirror_x = false,
+        .mirror_y = false,
+    },
+};
+lv_disp_t *disp = lvgl_port_add_disp(&disp_cfg);
+
+/* 5. Create a simple LVGL label */
+if (lvgl_port_lock(0)) {
+    lv_obj_t *label = lv_label_create(lv_scr_act());
+    lv_label_set_text(label, "Hello ESP32!");
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+    lvgl_port_unlock();
+}
+```
+
+<Tip>
+Always acquire the LVGL mutex with `lvgl_port_lock()` before calling any `lv_*` API from a task other than the LVGL task.
+</Tip>
+
+## Reference
+
+- [LCD drivers component reference](/components/lcd-drivers)
+- [LVGL integration component reference](/components/lvgl-integration)

@@ -1,0 +1,496 @@
+---
+title: Touch input
+description: Touch button, proximity, and slider sensors using ESP32 built-in touch hardware, plus touch panel controllers and the BS8112A3 capacitive touch IC.
+keywords: [touch, ESP32, touch button, touch proximity, touch slider, touch panel, BS8112A3, APDS9960, capacitive touch, LVGL]
+---
+
+ESP-IoT-Solution includes components for capacitive touch input at every level of abstraction: raw built-in touch sensor channels, higher-level button/proximity/slider detection, touchscreen panel controllers, and external touch ICs.
+
+<Warning>
+  ESP32, ESP32-S2, and ESP32-S3 touch-related components are intended for testing or demo purposes only. Due to poor EMI resistance, they may not pass EMS testing and are not recommended for mass production.
+</Warning>
+
+## Touch button sensor
+
+The `touch_button_sensor` component provides FSM-based touch button detection over the built-in touch channels of ESP32 series chips. Multiple-frequency sampling (available on ESP32-P4) improves noise immunity.
+
+**Supported chips:** ESP32, ESP32-S2, ESP32-S3 (IDF ≥ v5.3)
+
+**Dependencies:** `touch_sensor_fsm`, `touch_sensor_lowlevel`
+
+### Key features
+
+- Multi-frequency touch sampling for improved noise immunity
+- FSM-based detection with configurable thresholds
+- Debounce for reliable state transitions
+- Multiple touch channels per instance
+- Callback-based event notification
+
+### Configuration
+
+```c
+typedef struct {
+    uint32_t  channel_num;         // Number of touch button channels
+    uint32_t *channel_list;        // Array of touch channel numbers
+    float    *channel_threshold;   // Detection threshold per channel (e.g., 0.02 = 2% change)
+    uint32_t *channel_gold_value;  // Optional reference values (NULL to auto-calibrate)
+    uint32_t  debounce_times;      // Consecutive readings needed to confirm state change
+    bool      skip_lowlevel_init;  // Set true if touch hardware already initialized
+} touch_button_config_t;
+```
+
+### Creating and using a touch button
+
+```c
+#include "touch_button_sensor.h"
+
+void button_state_callback(touch_button_handle_t handle, uint32_t channel,
+                           touch_state_t state, void *arg)
+{
+    if (state == TOUCH_STATE_ACTIVE) {
+        printf("Channel %u: touched\n", channel);
+    } else if (state == TOUCH_STATE_INACTIVE) {
+        printf("Channel %u: released\n", channel);
+    }
+}
+
+touch_button_config_t config = {
+    .channel_num        = 1,
+    .channel_list       = (uint32_t[]){8},    // Touch channel 8
+    .channel_threshold  = (float[]){0.02f},   // 2% change threshold
+    .channel_gold_value = NULL,
+    .debounce_times     = 3,
+    .skip_lowlevel_init = false,
+};
+
+touch_button_handle_t btn_handle = NULL;
+esp_err_t ret = touch_button_sensor_create(
+    &config, &btn_handle, button_state_callback, NULL);
+```
+
+### Event handling loop
+
+Touch events must be processed periodically from your application task or main loop:
+
+```c
+while (1) {
+    touch_button_sensor_handle_events(btn_handle);
+    vTaskDelay(pdMS_TO_TICKS(20));
+}
+```
+
+---
+
+## Touch proximity sensor
+
+The `touch_proximity_sensor` component uses the proximity sensing mode of the ESP32-S3 built-in touch sensor to detect the approach of a finger, hand, or any conductive object—without direct contact.
+
+**Supported chips:** ESP32-S3 only (IDF ≥ v5.0)
+
+### Principle of operation
+
+In proximity sensing mode, the touch sensor outputs an accumulated value (`raw_value`). As a target approaches, this value increases. The component derives `smooth_value` and `baseline` from `raw_value` using configurable filter coefficients, then applies threshold detection to determine whether a proximity event has occurred.
+
+The detection pipeline:
+
+1. Validate incoming `raw_value` against outlier bounds (`max_p`, `min_n`).
+2. Update `smooth_value` and `baseline` using their respective coefficients.
+3. Compare `smooth_value - baseline` against the trigger threshold (`threshold_p`) to determine active/inactive state.
+
+### Configuration
+
+```c
+typedef struct {
+    uint32_t  channel_num;         // Up to 3 channels
+    uint32_t *channel_list;        // Array of touch_pad_t channel numbers
+    float    *channel_threshold;   // Detection threshold per channel
+    uint32_t  debounce_times;      // Consecutive readings to confirm state
+    uint32_t *channel_gold_value;  // Optional reference values
+    bool      skip_lowlevel_init;  // Skip init if touch hardware already configured
+} touch_proxi_config_t;
+```
+
+### Creating a proximity sensor
+
+```c
+#include "touch_proximity_sensor.h"
+
+uint32_t channel_list[] = {TOUCH_PAD_NUM8};
+float    threshold[]    = {0.05f};
+
+touch_proxi_config_t config = {
+    .channel_num       = 1,
+    .channel_list      = channel_list,
+    .channel_threshold = threshold,
+    .debounce_times    = 2,
+};
+
+touch_proximity_handle_t sensor_handle = NULL;
+esp_err_t ret = touch_proximity_sensor_create(
+    &config, &sensor_handle, proximity_callback, NULL);
+```
+
+### Event handling task
+
+```c
+void proximity_task(void *arg)
+{
+    while (1) {
+        touch_proximity_sensor_handle_events(sensor_handle);
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+xTaskCreate(proximity_task, "proximity_task", 2048, NULL, 5, NULL);
+```
+
+### Cleanup
+
+```c
+touch_proximity_sensor_delete(sensor_handle);
+```
+
+### Tuning parameters
+
+<AccordionGroup>
+  <Accordion title="meas_count (default: 20)">
+    Controls the update rate of sensor data. Lower values widen the response waveform. Pair with larger `debounce_p`/`debounce_n` values when reducing `meas_count`.
+  </Accordion>
+  <Accordion title="smooth_coef (default: 0.7)">
+    Controls how aggressively `smooth_value` tracks `raw_value`. Lower values give better noise rejection but slower response; higher values are more responsive but noisier.
+  </Accordion>
+  <Accordion title="baseline_coef (default: 0.05)">
+    Controls how quickly `baseline` follows `smooth_value`. Smaller values result in slower response and longer trigger duration.
+  </Accordion>
+  <Accordion title="threshold_p">
+    Sets the sensing distance. Smaller values increase sensing range but reduce interference immunity.
+  </Accordion>
+  <Accordion title="debounce_p / debounce_n (defaults: 2 / 50)">
+    Number of consecutive readings required to confirm a trigger (`debounce_p`) or release (`debounce_n`). Increase these when `meas_count` is low.
+  </Accordion>
+  <Accordion title="max_p (0.5) / min_n (0.05)">
+    Outlier rejection bounds. If `max_p` is too small, `smooth_value` can lock when a hand approaches. If `min_n` is too small, both values can lock when a hand moves away.
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  Achieving reliable proximity sensing requires tuning several parameters together rather than adjusting a single value.
+</Tip>
+
+---
+
+## Touch slider sensor
+
+The `touch_slider_sensor` component detects linear touch position and swipe gestures across an array of touch channels using FSM-based processing.
+
+**Supported chips:** ESP32, ESP32-S2, ESP32-S3 (IDF ≥ v5.3)
+
+**Dependencies:** `touch_sensor_fsm`, `touch_sensor_lowlevel`
+
+### Configuration
+
+```c
+typedef struct {
+    uint32_t  channel_num;         // Number of slider channels
+    uint32_t *channel_list;        // Array of touch channel numbers
+    float    *channel_threshold;   // Detection threshold per channel
+    uint32_t *channel_gold_value;  // Optional reference values
+    uint32_t  debounce_times;      // Consecutive readings for state confirmation
+    uint32_t  filter_reset_times;  // Readings to reset position filter
+    uint32_t  position_range;      // Max position value (higher = finer resolution)
+    uint8_t   calculate_window;    // Channels used for position calc (0 = auto)
+    float     swipe_threshold;     // Speed threshold for swipe detection
+    float     swipe_hysterisis;    // Speed hysteresis for swipe detection
+    float     swipe_alpha;         // Filter coefficient for speed estimation
+    bool      skip_lowlevel_init;  // Skip hardware init if already configured
+} touch_slider_config_t;
+```
+
+The `calculate_window` parameter controls how many adjacent channels contribute to position calculation:
+- `0` — auto (2 for 2-channel sliders, 3 for 3+ channels)
+- `2` — higher sensitivity, more susceptible to noise
+- `3+` — better noise immunity, slightly lower resolution
+
+### Creating a slider and handling events
+
+```c
+#include "touch_slider_sensor.h"
+
+static void touch_slider_event_callback(touch_slider_handle_t handle,
+                                        touch_slider_event_t event,
+                                        int32_t data, void *cb_arg)
+{
+    switch (event) {
+        case TOUCH_SLIDER_EVENT_RIGHT_SWIPE:
+            printf("Right swipe\n");
+            break;
+        case TOUCH_SLIDER_EVENT_LEFT_SWIPE:
+            printf("Left swipe\n");
+            break;
+        case TOUCH_SLIDER_EVENT_RELEASE:
+            printf("Released at position %ld\n", data);
+            break;
+        case TOUCH_SLIDER_EVENT_POSITION:
+            printf("Current position: %ld\n", data);
+            break;
+    }
+}
+
+uint32_t channel_list[] = {2, 4, 6, 12, 10, 8};
+float    threshold[]    = {0.005f, 0.005f, 0.005f, 0.005f, 0.005f, 0.005f};
+
+touch_slider_config_t config = {
+    .channel_num        = 6,
+    .channel_list       = channel_list,
+    .channel_threshold  = threshold,
+    .filter_reset_times = 5,
+    .position_range     = 10000,
+    .swipe_alpha        = 0.9f,
+    .swipe_threshold    = 50.0f,
+    .swipe_hysterisis   = 40.0f,
+    .channel_gold_value = NULL,
+    .debounce_times     = 0,
+    .calculate_window   = 0,      // auto-select (3 for 6 channels)
+    .skip_lowlevel_init = false,
+};
+
+touch_slider_handle_t slider_handle = NULL;
+ESP_ERROR_CHECK(touch_slider_sensor_create(
+    &config, &slider_handle,
+    touch_slider_position_callback,
+    touch_slider_event_callback,
+    NULL));
+```
+
+### Event handling loop
+
+```c
+while (1) {
+    touch_slider_sensor_handle_events(slider_handle);
+    vTaskDelay(pdMS_TO_TICKS(20));
+}
+```
+
+---
+
+## Touch panel (touchscreen)
+
+ESP-IoT-Solution provides drivers for touch panel controllers based on the `esp_lcd_touch` abstraction from ESP-BSP, giving a unified API across all supported touch controllers.
+
+### Controllers in ESP-IoT-Solution
+
+| Touch controller | Interface | Component |
+|---|---|---|
+| ILI2118 | I2C | `esp_lcd_touch_ili2118` |
+| SPD2010 | I2C | `esp_lcd_touch_spd2010` |
+| ST7123  | I2C | `esp_lcd_touch_st7123`  |
+
+Common controllers available through ESP-IDF and ESP-BSP include GT911, GT1151, FT5x06 series (FT5216, FT5316, FT5436, FT6336), CST816S, and TT21100.
+
+### Adding a touch driver
+
+```bash
+# Using the IDF Component Manager
+idf.py add-dependency "espressif/esp_lcd_touch_spd2010"
+```
+
+Or add to `idf_component.yml`:
+
+```yaml
+dependencies:
+  espressif/esp_lcd_touch_spd2010: "*"
+```
+
+### Initializing a touch panel (GT911 example)
+
+```c
+#include "esp_lcd_touch.h"
+#include "esp_lcd_touch_gt911.h"
+#include "driver/i2c_master.h"
+
+// Initialize I2C bus
+i2c_master_bus_config_t i2c_bus_conf = {
+    .clk_source               = I2C_CLK_SRC_DEFAULT,
+    .sda_io_num               = GPIO_NUM_8,
+    .scl_io_num               = GPIO_NUM_18,
+    .i2c_port                 = I2C_NUM_0,
+    .flags.enable_internal_pullup = true,
+};
+i2c_master_bus_handle_t i2c_bus;
+ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_conf, &i2c_bus));
+
+// Create I2C panel IO handle
+esp_lcd_panel_io_handle_t io_handle = NULL;
+esp_lcd_panel_io_i2c_config_t io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus, &io_config, &io_handle));
+
+// Configure touch panel
+esp_lcd_touch_config_t tp_cfg = {
+    .x_max       = 800,
+    .y_max       = 480,
+    .rst_gpio_num = GPIO_NUM_NC,
+    .int_gpio_num = GPIO_NUM_3,
+    .levels  = { .reset = 0, .interrupt = 0 },
+    .flags   = { .swap_xy = 0, .mirror_x = 0, .mirror_y = 0 },
+};
+
+esp_lcd_touch_handle_t touch_handle = NULL;
+ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(io_handle, &tp_cfg, &touch_handle));
+```
+
+### Reading touch coordinates
+
+```c
+// Call periodically (e.g., from a display refresh task)
+esp_lcd_touch_read_data(touch_handle);
+
+uint16_t touch_x[1], touch_y[1], touch_strength[1];
+uint8_t  touch_cnt = 0;
+
+bool pressed = esp_lcd_touch_get_coordinates(
+    touch_handle, touch_x, touch_y, touch_strength, &touch_cnt, 1);
+
+if (pressed && touch_cnt > 0) {
+    printf("Touch at X=%d Y=%d strength=%d\n",
+           touch_x[0], touch_y[0], touch_strength[0]);
+}
+```
+
+### LVGL integration
+
+```c
+#include "esp_lv_adapter.h"
+
+esp_lv_adapter_touch_config_t touch_cfg =
+    ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, touch_handle);
+
+lv_indev_t *indev = esp_lv_adapter_register_touch(&touch_cfg);
+```
+
+### Coordinate orientation
+
+```c
+tp_cfg.flags.swap_xy  = 1;  // Swap X and Y (use for 90°/270° rotations)
+tp_cfg.flags.mirror_x = 1;  // Mirror the X axis
+tp_cfg.flags.mirror_y = 1;  // Mirror the Y axis
+```
+
+Always set `x_max` and `y_max` to match your LCD resolution.
+
+---
+
+## BS8112A3 touch IC
+
+The `touch_ic_bs8112a3` component is an I2C driver for the Holtek BS8112A3 capacitive touch controller. It supports up to 12 independent touch keys.
+
+### Features
+
+- Up to 12 keys (Key1–Key12)
+- I2C interface at up to 400 kHz
+- Interrupt mode with FreeRTOS event group notification
+- Configurable touch thresholds and wake-up settings
+- Low power saving mode (LSC) support
+
+### Creating an instance
+
+```c
+#include "touch_ic_bs8112a3.h"
+
+// Initialize I2C bus first
+i2c_master_bus_config_t bus_config = {
+    .i2c_port                 = I2C_NUM_0,
+    .sda_io_num               = GPIO_NUM_21,
+    .scl_io_num               = GPIO_NUM_22,
+    .clk_source               = I2C_CLK_SRC_DEFAULT,
+    .glitch_ignore_cnt        = 7,
+    .flags.enable_internal_pullup = true,
+};
+i2c_master_bus_handle_t i2c_bus_handle;
+i2c_new_master_bus(&bus_config, &i2c_bus_handle);
+
+// Use default chip configuration
+bs8112a3_chip_config_t chip_cfg = TOUCH_IC_BS8112A3_DEFAULT_CHIP_CONFIG();
+
+touch_ic_bs8112a3_config_t config = {
+    .i2c_bus_handle = i2c_bus_handle,
+    .device_address = BS8112A3_I2C_ADDR,  // 0x50
+    .scl_speed_hz   = 400000,
+    .interrupt_pin  = GPIO_NUM_NC,
+    .chip_config    = &chip_cfg,
+};
+
+touch_ic_bs8112a3_handle_t handle;
+ESP_ERROR_CHECK(touch_ic_bs8112a3_create(&config, &handle));
+```
+
+### Reading key status
+
+```c
+// Read all 12 keys as a bitmask
+uint16_t status;
+esp_err_t ret = touch_ic_bs8112a3_get_key_status(handle, &status);
+if (ret == ESP_OK) {
+    printf("Touch status bitmask: 0x%04X\n", status);
+}
+
+// Read a single key (index 0–11)
+bool pressed;
+ret = touch_ic_bs8112a3_get_key_value(handle, 0, &pressed);
+if (ret == ESP_OK && pressed) {
+    printf("Key 0 is pressed\n");
+}
+```
+
+### Interrupt mode
+
+Configure `irq_pin` in the config struct to receive FreeRTOS event group notifications on each touch interrupt:
+
+```c
+touch_ic_bs8112a3_config_t config = {
+    .i2c_bus_handle  = i2c_bus_handle,
+    .device_address  = BS8112A3_I2C_ADDR,
+    .scl_speed_hz    = 400000,
+    .irq_pin         = GPIO_NUM_5,
+    .interrupt_callback = NULL,  // Runs in ISR — no I2C allowed here
+    .chip_config     = &chip_cfg,
+};
+
+touch_ic_bs8112a3_handle_t handle;
+touch_ic_bs8112a3_create(&config, &handle);
+
+// Get the automatically created event group
+EventGroupHandle_t event_group = touch_ic_bs8112a3_get_event_group(handle);
+
+while (1) {
+    EventBits_t bits = xEventGroupWaitBits(
+        event_group, BS8112A3_TOUCH_INTERRUPT_BIT,
+        pdTRUE, pdFALSE, portMAX_DELAY);
+
+    if (bits & BS8112A3_TOUCH_INTERRUPT_BIT) {
+        uint16_t status;
+        touch_ic_bs8112a3_get_key_status(handle, &status);
+        printf("Touch interrupt — status: 0x%04X\n", status);
+    }
+}
+```
+
+<Warning>
+  The optional `interrupt_callback` runs in ISR context. Do not perform I2C operations or any blocking calls inside it. Use the event group to signal your task, then read touch status in task context.
+</Warning>
+
+## Component locations
+
+| Component | Path |
+|---|---|
+| Touch button sensor | `components/touch/touch_button_sensor/` |
+| Touch proximity sensor | `components/touch/touch_proximity_sensor/` |
+| Touch slider sensor | `components/touch/touch_slider_sensor/` |
+| Touch button (basic) | `components/touch/touch_button/` |
+| BS8112A3 touch IC | `components/touch_ic/touch_ic_bs8112a3/` |
+
+## Examples
+
+- `touch/touch_button_sensor` — Touch button sensor demo
+- `touch/touch_proximity` — Touch proximity sensing demo
+- `touch/touch_slider_sensor` — Touch slider and swipe gesture demo
+- `display/gui/lvgl_common_demo` — LVGL with touch panel integration
